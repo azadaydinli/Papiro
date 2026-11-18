@@ -3,93 +3,8 @@ import PDFKit
 import UniformTypeIdentifiers
 
 private extension NSToolbarItem.Identifier {
-    static let sidebar = Self("sidebar"), mode = Self("mode"), zoom = Self("zoom"), split = Self("split"), search = Self("search")
-    static let searchField = Self("searchField")
-    static let undo = Self("undo"), redo = Self("redo")
-}
-
-/// Search in the toolbar. Closed it is an ordinary toolbar button (`.search`), so the system draws it as the same
-/// glass circle as the other icon buttons; a click puts a search field item (`.searchField`) in its place, which
-/// gives way to the button again when it is left empty, or with Esc. (A toolbar item that once had a view may not
-/// lose it again — AppKit stops — so the two are separate items, swapped in the toolbar.)
-private final class ToolbarSearch: NSObject, NSSearchFieldDelegate {
-    let field = NSSearchField()
-    weak var toolbar: NSToolbar?
-    private(set) var expanded = false
-
-    init(target: AnyObject, action: Selector) {
-        super.init()
-        field.placeholderString = "Mətndə axtar"
-        field.sendsWholeSearchString = true
-        field.target = target
-        field.action = action
-        field.delegate = self
-        field.translatesAutoresizingMaskIntoConstraints = false
-        field.widthAnchor.constraint(equalToConstant: 220).isActive = true
-    }
-
-    func buttonItem() -> NSToolbarItem {
-        let i = NSToolbarItem(itemIdentifier: .search)
-        i.label = "Axtar"
-        i.toolTip = "Mətndə axtar (⌘F)"
-        i.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Axtar")
-        i.isBordered = true
-        i.target = self
-        i.action = #selector(open)
-        return i
-    }
-
-    func fieldItem() -> NSToolbarItem {
-        let i = NSToolbarItem(itemIdentifier: .searchField)
-        i.label = "Axtar"
-        i.view = field
-        return i
-    }
-
-    /// Put `to` in the toolbar where `from` is.
-    private func swapItem(_ from: NSToolbarItem.Identifier, _ to: NSToolbarItem.Identifier) {
-        guard let tb = toolbar, let k = tb.items.firstIndex(where: { $0.itemIdentifier == from }) else { return }
-        tb.removeItem(at: k)
-        tb.insertItem(withItemIdentifier: to, at: k)
-    }
-
-    @objc func open() {
-        if !expanded {
-            expanded = true
-            swapItem(.search, .searchField)
-        }
-        focusField(tries: 10)
-    }
-
-    /// The field is in the window only after the toolbar has laid out its new item: try again shortly until it is.
-    private func focusField(tries: Int) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
-            if let w = self.field.window { w.makeFirstResponder(self.field) }
-            else if tries > 1 { self.focusField(tries: tries - 1) }
-        }
-    }
-
-    func close() {
-        guard expanded else { return }
-        expanded = false
-        // after the key press or the end of editing has been handled: the field is still busy until then
-        DispatchQueue.main.async { if !self.expanded { self.swapItem(.searchField, .search) } }
-    }
-
-    func controlTextDidEndEditing(_ obj: Notification) {
-        if field.stringValue.isEmpty { close() }
-    }
-
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
-        if sel == #selector(NSResponder.cancelOperation(_:)) {
-            field.stringValue = ""
-            field.sendAction(field.action, to: field.target)   // clears the highlights
-            field.window?.makeFirstResponder(nil)              // ends editing; the button comes back afterwards
-            close()
-            return true
-        }
-        return false
-    }
+    static let sidebar = Self("sidebar"), mode = Self("mode"), zoom = Self("zoom"), search = Self("search")
+    static let rotate = Self("rotate"), tools = Self("tools"), share = Self("share"), history = Self("history")
 }
 
 /// The page view. Near the left panel's edge it leaves the mouse pointer to the split view (otherwise it would
@@ -162,7 +77,7 @@ final class PageView: PDFView {
 /// - text: "Mətn" — text boxes typed on the pages.
 /// The signature panel ("İmza") opens on the right in the page view; signatures are dragged onto pages.
 final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSMenuItemValidation,
-                                 NSToolbarItemValidation, NSSearchFieldDelegate {
+                                 NSToolbarItemValidation, NSSearchFieldDelegate, NSSharingServicePickerToolbarItemDelegate {
     enum Mode { case page, grid, split, margins, marginsApply, whiteout, text }
 
     let pdfView = PageView()
@@ -182,11 +97,23 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     /// The left panel can be narrowed a little (from its original 176 px) and widened up to 400 px.
     private static let sidebarRange: ClosedRange<CGFloat> = 150...400
     private let content = NSView()
-    private let pageButton = NSButton(title: "", target: nil, action: nil)
-    /// The current scale ("112%"); a click opens the list of scales. A plain button, so the number is drawn bright.
-    private let zoomButton = NSButton(title: "100%", target: nil, action: nil)
     private var modeGroup: NSToolbarItemGroup?
-    private lazy var searchBox = ToolbarSearch(target: self, action: #selector(searchAction(_:)))
+    /// Rotate, undo / redo and zoom: segmented controls (as "Səhifə / Şəbəkə"), so they react to a click like the
+    /// other toolbar buttons and show dividers between their parts.
+    private var rotateGroup: NSToolbarItemGroup?
+    private var historyGroup: NSToolbarItemGroup?
+    private var zoomGroup: NSToolbarItemGroup?
+    private static let zoomSteps: [CGFloat] = [0.5, 0.75, 1, 1.25, 1.5, 2, 3]
+    /// The toolbar's search field (the system one, as in Preview).
+    private var searchItem: NSSearchToolbarItem?
+    /// The "Alətlər" button: shows or hides the tool bar under the toolbar.
+    private var toolsGroup: NSToolbarItemGroup?
+    /// The tool bar (under the toolbar), and whether the user wants it shown (tools that need it show it anyway).
+    private var stripBar: NSSplitViewItemAccessoryViewController!
+    private var toolsWanted: Bool {
+        get { UserDefaults.standard.object(forKey: "toolsShown") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "toolsShown") }
+    }
     private(set) var mode: Mode = .page
     /// Whether the left panel should show with a single page. Follows the user: the panel button, or dragging
     /// the panel's edge until it closes (or out again).
@@ -200,7 +127,6 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     private var found: [PDFSelection] = []
     private var foundAt = 0
     private var lastQuery = ""
-    private static let zoomSteps: [CGFloat] = [0.5, 0.75, 1, 1.25, 1.5, 2, 3]
 
     // text and signatures
     private let textOverlay = TextOverlay()
@@ -274,14 +200,18 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
             guard let d = pdfDoc else { return }
             WelcomeController.hide()
             pdfView.document = d.pdf
+            noteRotations()
             grid.reload()
             updatePageLabel()
-            updateZoomTitle()
             updateStrip()
             // the split view restores its last state (possibly folded in the grid): show the panel as the mode wants
             DispatchQueue.main.async { self.sidebarReady = true; self.applySidebar(); self.sidebarResized(); self.fitPage(nil) }   // open showing the whole first page
             NotificationCenter.default.removeObserver(self, name: .pagesChanged, object: nil)
             NotificationCenter.default.addObserver(self, selector: #selector(docChanged), name: .pagesChanged, object: d)
+            for n in [Notification.Name.NSUndoManagerDidCloseUndoGroup, .NSUndoManagerDidUndoChange, .NSUndoManagerDidRedoChange] {
+                NotificationCenter.default.removeObserver(self, name: n, object: nil)
+                NotificationCenter.default.addObserver(self, selector: #selector(updateToolbarStates), name: n, object: d.undoManager)
+            }
             NotificationCenter.default.removeObserver(self, name: .annotationsChanged, object: nil)
             NotificationCenter.default.addObserver(self, selector: #selector(annotationsChanged(_:)), name: .annotationsChanged, object: d)
             NotificationCenter.default.removeObserver(self, name: .pagesWillChange, object: nil)
@@ -326,6 +256,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         let bar = NSSplitViewItemAccessoryViewController()
         bar.view = strip
         mainItem.addTopAlignedAccessoryViewController(bar)
+        stripBar = bar
 
         inspectorItem = NSSplitViewItem(inspectorWithViewController: signaturePanel)
         inspectorItem.minimumThickness = 200
@@ -381,20 +312,6 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         textOverlay.showStyle = { [weak self] s in self?.showTextStyle(s) }
         textOverlay.onEscape = { [weak self] in self?.setMode(.page) }
 
-        // "3 / 250" in the bottom-right corner; click it to go to a page
-        pageButton.bezelStyle = .glass
-        pageButton.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-        pageButton.target = self
-        pageButton.action = #selector(goToPage(_:))
-        pageButton.toolTip = "Səhifəyə keç (⌥⌘G)"
-        pageButton.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(pageButton)
-        NSLayoutConstraint.activate([
-            pageButton.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
-            pageButton.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
-            pageButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 80),
-        ])
-
         NotificationCenter.default.addObserver(self, selector: #selector(pageChanged), name: .PDFViewPageChanged, object: pdfView)
         DispatchQueue.main.async {
             if let clip = self.pdfView.documentView?.enclosingScrollView?.contentView {
@@ -412,15 +329,13 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         tb.displayMode = .iconOnly
         tb.allowsUserCustomization = false
         w.toolbar = tb
-        searchBox.toolbar = tb
         w.toolbarStyle = .unified
         updateStrip()
+        updateStripVisibility()
     }
 
     // MARK: tool strip
 
-    private lazy var bRotL = tool("", "rotate.left", #selector(rotateLeft(_:)), tip: "Sola döndər (⌘L)")
-    private lazy var bRotR = tool("", "rotate.right", #selector(rotateRight(_:)), tip: "Sağa döndər (⌘R)")
     private lazy var bExtract = tool("", "arrow.up.doc", #selector(extractPages(_:)), tip: "Çıxar: seçilmiş səhifələri ayrıca fayl kimi saxla (⌥⌘E)")
     private lazy var bAdd = tool("", "plus", #selector(showAddMenu(_:)), tip: "Əlavə et: başqa PDF-in səhifələri və ya boş səhifə")
     private lazy var bDelete = tool("", "trash", #selector(deletePages(_:)), tip: "Sil: seçilmiş səhifələri sil (⌘⌫)")
@@ -531,7 +446,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     }
 
     private var squares: [ObjectIdentifier: NSLayoutConstraint] = [:]
-    private var pageTools: [NSButton] { [bRotL, bRotR, bAdd, bExtract, bDelete, bWhite, bText, bSign] }
+    private var pageTools: [NSButton] { [bAdd, bExtract, bDelete, bWhite, bText, bSign] }
 
     /// "Kənarları təmizlə" and "Sənədlərə parçala" show their names; only a window too narrow for them makes
     /// them icons as well.
@@ -692,11 +607,12 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         let scans = hasScans
         bMargins.toolTip = scans ? "Deşik izlərini və kənar ləkələri sil (⌘K)" : "Yalnız skan edilmiş səhifələrdə işləyir: bu sənəddə skan yoxdur"
         bWhite.toolTip = scans ? "Ağart: lazımsız hissələri əl ilə sil (⌥⌘W)" : "Ağart yalnız skan edilmiş səhifələrdə işləyir: bu sənəddə skan yoxdur"
-        for b in [bRotL, bRotR, bAdd, bExtract, bDelete, bMargins, bWhite, bSplit, bMark, bUnmark, bUnmarkAll, bFinish, bWrite,
+        for b in [bAdd, bExtract, bDelete, bMargins, bWhite, bSplit, bMark, bUnmark, bUnmarkAll, bFinish, bWrite,
                   bPrev, bNext, bAuto, bFull, bCancel, bApplyOne, bApply, bBack, bText, bSign] {
             b.target = self
             b.isEnabled = can(b.action)
         }
+        updateToolbarStates()
     }
 
     /// "+": a small menu — pages of another PDF, or a blank page.
@@ -729,40 +645,136 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
 
     // MARK: toolbar
 
-    func toolbarDefaultItemIdentifiers(_ t: NSToolbar) -> [NSToolbarItem.Identifier] {
-        // the flexible space before the panel button keeps it at the panel's right edge, following its width
-        [.flexibleSpace, .sidebar, .sidebarTrackingSeparator, .undo, .redo, .flexibleSpace, .mode, .zoom, .space, .search]
-    }
-    func toolbarAllowedItemIdentifiers(_ t: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.flexibleSpace, .sidebar, .sidebarTrackingSeparator, .undo, .redo, .flexibleSpace, .mode, .zoom, .space, .search, .searchField]
-    }
+    // Preview's arrangement. From the right: search; share; zoom out / scale / zoom in; page view / grid;
+    // undo / redo; rotate left / right; "Alətlər" (the tool bar below). Groups share one glass capsule.
+    // The flexible space before the panel button keeps it at the panel's right edge, following its width.
+    private static let items: [NSToolbarItem.Identifier] =
+        [.flexibleSpace, .sidebar, .sidebarTrackingSeparator, .flexibleSpace, .tools, .rotate, .history, .mode, .zoom, .share, .search]
+    func toolbarDefaultItemIdentifiers(_ t: NSToolbar) -> [NSToolbarItem.Identifier] { Self.items }
+    func toolbarAllowedItemIdentifiers(_ t: NSToolbar) -> [NSToolbarItem.Identifier] { Self.items }
 
     private func updateToolbar() {
         modeGroup?.selectedIndex = inGrid ? 1 : 0
     }
 
+    /// One toolbar button (also used inside groups).
+    private func barItem(_ id: String, _ label: String, _ symbol: String, _ action: Selector, tip: String, toResponders: Bool = false) -> NSToolbarItem {
+        let i = NSToolbarItem(itemIdentifier: .init(id))
+        i.label = label
+        i.toolTip = tip
+        i.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        i.action = action
+        i.target = toResponders ? nil : self      // nil: through the responder chain (undo / redo)
+        i.isBordered = true
+        return i
+    }
+
+    /// A momentary segmented control in one capsule (one part per symbol), with a tooltip for each part.
+    private func segments(_ id: NSToolbarItem.Identifier, _ label: String, _ symbols: [String], _ labels: [String],
+                          _ tips: [String], _ action: Selector) -> NSToolbarItemGroup {
+        let images = zip(symbols, labels).map { NSImage(systemSymbolName: $0, accessibilityDescription: $1)! }
+        let g = NSToolbarItemGroup(itemIdentifier: id, images: images, selectionMode: .momentary, labels: labels, target: self, action: action)
+        g.label = label
+        g.controlRepresentation = .expanded
+        for (i, t) in tips.enumerated() where i < g.subitems.count { g.subitems[i].toolTip = t }
+        return g
+    }
+
+    @objc func rotateClicked(_ sender: NSToolbarItemGroup) {
+        if sender.selectedIndex == 0 { rotateLeft(sender) } else { rotateRight(sender) }
+    }
+
+    /// Through the responder chain: the text being typed undoes its typing, otherwise the document its last step.
+    @objc func historyClicked(_ sender: NSToolbarItemGroup) {
+        let undo = sender.selectedIndex == 0
+        if !NSApp.sendAction(undo ? Selector(("undo:")) : Selector(("redo:")), to: nil, from: self) {
+            if undo { pdfDoc?.undoManager?.undo() } else { pdfDoc?.undoManager?.redo() }
+        }
+        updateToolbarStates()
+    }
+
+    /// The parts of the segmented controls are not validated by AppKit: enable them here (after every change,
+    /// undo, redo, mode or selection change).
+    @objc func updateToolbarStates() {
+        if let g = historyGroup, g.subitems.count == 2 {
+            let um = window?.firstResponder?.undoManager ?? pdfDoc?.undoManager
+            g.subitems[0].isEnabled = um?.canUndo ?? false
+            g.subitems[1].isEnabled = um?.canRedo ?? false
+        }
+        if let g = rotateGroup {
+            let ok = can(#selector(rotateLeft(_:)))
+            g.subitems.forEach { $0.isEnabled = ok }
+        }
+        if let g = zoomGroup, g.subitems.count == 3 { g.subitems[1].isEnabled = !inGrid }
+    }
+
+    @objc func zoomClicked(_ sender: NSToolbarItemGroup) {
+        switch sender.selectedIndex {
+        case 0: zoomOutAction(sender)
+        case 2: zoomInAction(sender)
+        default: showZoomMenu()
+        }
+    }
+
+    /// The scale on the middle part of the zoom control ("112%"; in the grid the thumbnail width).
+    private func updateZoomLabel() {
+        guard let g = zoomGroup, g.subitems.count == 3 else { return }
+        g.subitems[1].title = inGrid ? "\(Int(grid.itemWidth)) px" : "\(Int((pdfView.scaleFactor * 100).rounded()))%"
+    }
+
+    private func showZoomMenu() {
+        guard !inGrid else { return }
+        let m = NSMenu()
+        for t in ["Səhifəni sığdır", "Eninə sığdır"] { m.addItem(withTitle: t, action: #selector(zoomPicked(_:)), keyEquivalent: "") }
+        m.addItem(.separator())
+        let now = Int((pdfView.scaleFactor * 100).rounded())
+        for s in Self.zoomSteps {
+            let item = m.addItem(withTitle: "\(Int(s * 100))%", action: #selector(zoomPicked(_:)), keyEquivalent: "")
+            item.state = Int(s * 100) == now ? .on : .off
+        }
+        m.items.forEach { $0.target = self }
+        m.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+    }
+
+    @objc func zoomPicked(_ sender: NSMenuItem) {
+        let t = sender.title
+        if t == "Səhifəni sığdır" { fitPage(nil) }
+        else if t == "Eninə sığdır" { pdfView.autoScales = true }
+        else if let v = Int(t.dropLast()) { pdfView.autoScales = false; pdfView.scaleFactor = CGFloat(v) / 100 }
+        updateZoomLabel()
+    }
+
     func toolbar(_ t: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar f: Bool) -> NSToolbarItem? {
         switch id {
-        case .undo, .redo:
-            // through the responder chain to the document's undo manager; AppKit enables them when there is something to undo
-            let i = NSToolbarItem(itemIdentifier: id)
-            i.label = id == .undo ? "Geri" : "İrəli"
-            i.toolTip = id == .undo ? "Son əməliyyatı geri qaytar (⌘Z)" : "Geri qaytarılanı təkrarla (⇧⌘Z)"
-            i.image = NSImage(systemSymbolName: id == .undo ? "arrow.uturn.backward" : "arrow.uturn.forward", accessibilityDescription: i.label)
-            i.action = id == .undo ? Selector(("undo:")) : Selector(("redo:"))
-            i.isBordered = true
-            return i
         case .sidebarTrackingSeparator:
             return NSTrackingSeparatorToolbarItem(identifier: id, splitView: splitVC.splitView, dividerIndex: 0)
         case .sidebar:
-            let i = NSToolbarItem(itemIdentifier: id)
-            i.label = "Panel"
-            i.toolTip = "Sol paneli göstər / gizlət (⌥⌘S)"
-            i.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: "Panel")
-            i.target = self
-            i.action = #selector(toggleSidebarPanel(_:))
-            i.isBordered = true
+            return barItem("sidebar", "Panel", "sidebar.left", #selector(toggleSidebarPanel(_:)), tip: "Sol paneli göstər / gizlət (⌥⌘S)")
+        case .rotate:
+            let g = segments(id, "Döndər", ["rotate.left", "rotate.right"], ["Sola döndər", "Sağa döndər"],
+                             ["Sola döndər (⌘L)", "Sağa döndər (⌘R)"], #selector(rotateClicked(_:)))
+            rotateGroup = g
+            return g
+        case .tools:
+            let g = NSToolbarItemGroup(itemIdentifier: id,
+                                       images: [NSImage(systemSymbolName: "pencil.tip.crop.circle", accessibilityDescription: "Alətlər")!],
+                                       selectionMode: .selectAny, labels: ["Alətlər"], target: self, action: #selector(toolsClicked(_:)))
+            g.label = "Alətlər"
+            g.toolTip = "Alətlər barını göstər / gizlət"
+            toolsGroup = g
+            updateStripVisibility()
+            return g
+        case .share:
+            let i = NSSharingServicePickerToolbarItem(itemIdentifier: id)
+            i.label = "Paylaş"
+            i.toolTip = "Paylaş"
+            i.delegate = self
             return i
+        case .history:
+            let g = segments(id, "Geri al / Təkrarla", ["arrow.uturn.backward", "arrow.uturn.forward"], ["Geri al", "Təkrarla"],
+                             ["Son əməliyyatı geri qaytar (⌘Z)", "Geri qaytarılanı təkrarla (⇧⌘Z)"], #selector(historyClicked(_:)))
+            historyGroup = g
+            return g
         case .mode:
             let g = NSToolbarItemGroup(itemIdentifier: id,
                                        images: [NSImage(systemSymbolName: "doc.text", accessibilityDescription: "Səhifə")!,
@@ -776,37 +788,53 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
             modeGroup = g
             return g
         case .zoom:
-            let minus = NSButton(image: NSImage(systemSymbolName: "minus", accessibilityDescription: "Kiçilt")!, target: self, action: #selector(zoomOutAction(_:)))
-            let plus = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "Böyüt")!, target: self, action: #selector(zoomInAction(_:)))
-            for b in [minus, plus] { b.bezelStyle = .texturedRounded; b.widthAnchor.constraint(equalToConstant: 30).isActive = true }
-            minus.toolTip = "Kiçilt (⌘−)"; plus.toolTip = "Böyüt (⌘+)"
-            zoomButton.bezelStyle = .texturedRounded
-            zoomButton.target = self
-            zoomButton.action = #selector(showZoomMenu(_:))
-            zoomButton.toolTip = "Miqyas"
-            zoomButton.widthAnchor.constraint(equalToConstant: 64).isActive = true
-            let box = NSStackView(views: [minus, zoomButton, plus])
-            box.spacing = 4
-            let i = NSToolbarItem(itemIdentifier: id)
-            i.label = "Miqyas"
-            i.view = box
-            return i
-        case .split:
-            let b = NSButton(title: "Böl", image: NSImage(systemSymbolName: "scissors", accessibilityDescription: "Böl")!,
-                             target: self, action: #selector(splitVolume(_:)))
-            b.imagePosition = .imageLeading
-            b.bezelStyle = .texturedRounded
-            b.toolTip = "Cildi sənədlərə böl (⌘B)"
-            let i = NSToolbarItem(itemIdentifier: id)
-            i.label = "Böl"
-            i.view = b
-            return i
+            // the middle part shows the scale ("112%"); a click on it opens the list of scales
+            let g = segments(id, "Miqyas", ["minus.magnifyingglass", "magnifyingglass", "plus.magnifyingglass"], ["Kiçilt", "Miqyas", "Böyüt"],
+                             ["Kiçilt (⌘−)", "Miqyas: seçimlər", "Böyüt (⌘+)"], #selector(zoomClicked(_:)))
+            g.subitems[1].image = nil
+            zoomGroup = g
+            updateZoomLabel()
+            return g
         case .search:
-            return searchBox.buttonItem()
-        case .searchField:
-            return searchBox.fieldItem()
+            let i = NSSearchToolbarItem(itemIdentifier: id)
+            i.label = "Axtar"
+            i.toolTip = "Mətndə axtar (⌘F)"
+            i.searchField.placeholderString = "Axtar"
+            i.searchField.sendsWholeSearchString = true
+            i.searchField.target = self
+            i.searchField.action = #selector(searchAction(_:))
+            i.preferredWidthForSearchField = 200
+            searchItem = i
+            return i
         default: return nil
         }
+    }
+
+    /// "Paylaş": the document's file (saved first, so the shared copy has every change).
+    func items(for pickerToolbarItem: NSSharingServicePickerToolbarItem) -> [Any] {
+        guard let d = pdfDoc, let url = d.fileURL else { return [] }
+        if d.isDocumentEdited { d.save(to: url, ofType: d.fileType ?? "com.adobe.pdf", for: .saveOperation) { _ in } }
+        return [url]
+    }
+
+    /// "Alətlər": show or hide the tool bar (it stays while a tool that needs it is open).
+    @objc func toolsClicked(_ sender: NSToolbarItemGroup) {
+        toolsWanted = sender.isSelected(at: 0)
+        updateStripVisibility()
+    }
+
+    /// The tool bar shows when the user wants it, and always for the tools that work from it.
+    private func updateStripVisibility() {
+        guard stripBar != nil else { return }
+        let needed: Set<Mode> = [.split, .margins, .marginsApply, .text, .whiteout]
+        let show = toolsWanted || needed.contains(mode)
+        if stripBar.isHidden == show {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.2
+                stripBar.animator().isHidden = !show
+            }
+        }
+        toolsGroup?.setSelected(show, at: 0)
     }
 
     // MARK: modes
@@ -857,8 +885,9 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         }
         updateToolbar()
         updatePageLabel()
-        updateZoomTitle()
+        updateZoomLabel()
         updateStrip()
+        updateStripVisibility()
     }
 
     func openPage(_ i: Int) {
@@ -915,6 +944,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     @objc func docChanged() {
         if inGrid { grid.reload() }
         pdfView.layoutDocumentView()
+        refreshTurnedThumbnails()
         if !inGrid, let spot = spotBeforeChange { restore(spot) }
         spotBeforeChange = nil
         overlay.needsDisplay = true
@@ -942,7 +972,8 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     }
 
     @objc func scaleChanged() {
-        updateZoomTitle(); overlay.needsDisplay = true; whiteOverlay.needsDisplay = true
+        updateZoomLabel()
+        overlay.needsDisplay = true; whiteOverlay.needsDisplay = true
         DispatchQueue.main.async { self.pdfView.sharpenAnnotations() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self.pdfView.sharpenAnnotations() }   // layers made late
         if mode == .text { textOverlay.layoutEditor() }
@@ -966,77 +997,101 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         switch mode {
         case .grid:
             let s = grid.selected.count
-            pageButton.title = "\(n) səhifə" + (s > 0 ? " · seçilib \(s)" : "")
+            window?.subtitle = "\(n) səhifə" + (s > 0 ? " · seçilib \(s)" : "")
         case .split:
             let loose = n - (pdfDoc?.orderedGroups().reduce(0) { $0 + $1.count } ?? 0)
-            pageButton.title = "\(g) sənəd" + (loose > 0 ? " · işarəsiz \(loose) səhifə" : " · hamısı işarələnib")
+            window?.subtitle = "\(g) sənəd" + (loose > 0 ? " · işarəsiz \(loose) səhifə" : " · hamısı işarələnib")
         case .page, .margins, .whiteout, .text:
-            pageButton.title = n > 0 ? "\(currentPageIndex + 1) / \(n)" : ""
+            window?.subtitle = n > 0 ? "Səhifə \(currentPageIndex + 1) / \(n)" : ""
         case .marginsApply:
-            pageButton.title = "\(grid.chosen.count) / \(n) səhifə təmizlənəcək"
+            window?.subtitle = "\(grid.chosen.count) / \(n) səhifə təmizlənəcək"
+        }
+    }
+
+    // MARK: thumbnails of turned pages
+
+    /// Each page's rotation as the left panel last drew it.
+    private var shownRotation: [ObjectIdentifier: Int] = [:]
+
+    private func noteRotations() {
+        shownRotation = [:]
+        for p in pdfDoc?.pages ?? [] { shownRotation[ObjectIdentifier(p)] = p.rotation }
+    }
+
+    /// The left panel does not notice a page being turned (by the buttons, or by undo / redo): tell it about each
+    /// turned page the way PDFKit tells it about changed annotations, and it draws that page again.
+    private func refreshTurnedThumbnails() {
+        for p in pdfDoc?.pages ?? [] {
+            let key = ObjectIdentifier(p)
+            if let was = shownRotation[key], was != p.rotation { pdfView.annotationsChanged(on: p) }
+            shownRotation[key] = p.rotation
         }
     }
 
     // MARK: zoom & navigation
 
-    func updateZoomTitle() {
-        let t = inGrid ? "\(Int(grid.itemWidth))px" : "\(Int((pdfView.scaleFactor * 100).rounded()))%"
-        zoomButton.isEnabled = !inGrid      // the page view, also while cleaning margins or whitening
-        let centred = NSMutableParagraphStyle()
-        centred.alignment = .center
-        zoomButton.attributedTitle = NSAttributedString(string: t, attributes: [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .medium),
-            .foregroundColor: zoomButton.isEnabled ? NSColor.labelColor : NSColor.tertiaryLabelColor,
-            .paragraphStyle: centred])
-    }
-
-    @objc func showZoomMenu(_ sender: NSButton) {
-        let m = NSMenu()
-        for t in ["Səhifəni sığdır", "Eninə sığdır"] { m.addItem(withTitle: t, action: #selector(zoomPicked(_:)), keyEquivalent: "") }
-        m.addItem(.separator())
-        for s in Self.zoomSteps { m.addItem(withTitle: "\(Int(s * 100))%", action: #selector(zoomPicked(_:)), keyEquivalent: "") }
-        m.items.forEach { $0.target = self }
-        m.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
-    }
-
-    @objc func zoomPicked(_ sender: NSMenuItem) {
-        let t = sender.title
-        if t == "Səhifəni sığdır" { fitPage(nil) }
-        else if t == "Eninə sığdır" { pdfView.autoScales = true }
-        else if let v = Int(t.dropLast()) { pdfView.autoScales = false; pdfView.scaleFactor = CGFloat(v) / 100 }
-        updateZoomTitle()
-    }
-
-    @objc func sizeChanged(_ sender: NSSlider) { grid.itemWidth = CGFloat(sender.doubleValue); updateZoomTitle() }
+    @objc func sizeChanged(_ sender: NSSlider) { grid.itemWidth = CGFloat(sender.doubleValue); updateZoomLabel() }
 
     @objc func zoomInAction(_ sender: Any?) {
         if inGrid { grid.itemWidth = min(grid.itemWidth + 40, 420); sizeSlider.doubleValue = Double(grid.itemWidth) }
-        else { pdfView.zoomIn(sender) }
-        updateZoomTitle()
+        else { stepZoom(up: true) }
+        updateZoomLabel()
     }
     @objc func zoomOutAction(_ sender: Any?) {
         if inGrid { grid.itemWidth = max(grid.itemWidth - 40, 90); sizeSlider.doubleValue = Double(grid.itemWidth) }
-        else { pdfView.zoomOut(sender) }
-        updateZoomTitle()
+        else { stepZoom(up: false) }
+        updateZoomLabel()
     }
-    @objc func zoomToFit(_ sender: Any?) {
-        if inGrid { grid.itemWidth = 170; sizeSlider.doubleValue = 170 } else { fitPage(nil) }
-        updateZoomTitle()
+    /// Zoom in or out to the next whole ten percent: 100 → 110 → 120; from a scale set by hand, e.g. 83%,
+    /// in goes to 90% and out to 80%.
+    func stepZoom(up: Bool) {
+        let now = (pdfView.scaleFactor * 10_000).rounded() / 100            // percent, to 0.01 (99.9999… is 100)
+        let tens = up ? (now / 10).rounded(.down) + 1 : (now / 10).rounded(.up) - 1
+        let lowest = max(10, pdfView.minScaleFactor * 100), highest = min(1000, pdfView.maxScaleFactor * 100)
+        let target = min(max(tens * 10, lowest), highest)
+        pdfView.autoScales = false
+        pdfView.scaleFactor = target / 100
     }
 
-    /// Scale so the whole current page is visible.
+    @objc func zoomToFit(_ sender: Any?) {
+        if inGrid { grid.itemWidth = 170; sizeSlider.doubleValue = 170 } else { fitPage(nil) }
+        updateZoomLabel()
+    }
+
+    /// "Səhifəni sığdır": the whole current page fits, with a gap above and below it as wide as the gap between two
+    /// pages, so the next page does not show; the page is centred in the part of the view the bars leave free.
     @objc func fitPage(_ sender: Any?) {
         guard let p = pdfView.currentPage ?? pdfDoc?.pdf.page(at: 0) else { return }
         var size = p.bounds(for: pdfView.displayBox).size
         if p.rotation % 180 != 0 { size = CGSize(width: size.height, height: size.width) }
-        let avail = pdfView.bounds.insetBy(dx: 30, dy: 30).size
-        guard size.width > 0, size.height > 0, avail.width > 0, avail.height > 0 else { return }
+        let free = visiblePageArea()
+        let gap = pdfView.pageBreakMargins.top + pdfView.pageBreakMargins.bottom   // between two pages, page points
+        guard size.width > 0, size.height > 0, free.width > 0, free.height > 0 else { return }
         pdfView.autoScales = false
-        pdfView.scaleFactor = min(avail.width / size.width, avail.height / size.height)
-        pdfView.go(to: p)
-        updateZoomTitle()
+        pdfView.scaleFactor = min(free.width / (size.width + 2 * gap), free.height / (size.height + 2 * gap))
+        pdfView.layoutDocumentView()
+        centre(p)
+        updateZoomLabel()
     }
-    @objc func actualSize(_ sender: Any?) { setMode(.page); pdfView.autoScales = false; pdfView.scaleFactor = 1; updateZoomTitle() }
+
+    /// The part of the page view not covered by the bars floating over it (in page-view coordinates).
+    private func visiblePageArea() -> CGRect {
+        let insets = pdfView.documentView?.enclosingScrollView?.contentInsets ?? NSEdgeInsetsZero
+        let b = pdfView.bounds
+        let y = pdfView.isFlipped ? b.minY + insets.top : b.minY + insets.bottom
+        return CGRect(x: b.minX + insets.left, y: y,
+                      width: b.width - insets.left - insets.right, height: b.height - insets.top - insets.bottom)
+    }
+
+    /// Scroll so the page's middle is in the middle of the free part of the view.
+    private func centre(_ p: PDFPage) {
+        guard let clip = pdfView.documentView?.enclosingScrollView?.contentView, let sv = clip.enclosingScrollView else { return }
+        let page = clip.convert(pdfView.convert(p.bounds(for: pdfView.displayBox), from: p), from: pdfView)
+        let free = clip.convert(visiblePageArea(), from: pdfView)
+        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: clip.bounds.origin.y + (page.midY - free.midY)))
+        sv.reflectScrolledClipView(clip)
+    }
+    @objc func actualSize(_ sender: Any?) { setMode(.page); pdfView.autoScales = false; pdfView.scaleFactor = 1 }
     @objc func singlePage(_ sender: Any?) { setMode(.page); pdfView.displayMode = .singlePageContinuous }
     @objc func twoPages(_ sender: Any?) { setMode(.page); pdfView.displayMode = .twoUpContinuous }
 
@@ -1068,7 +1123,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     // MARK: search
 
     @objc func focusSearch(_ sender: Any?) {
-        searchBox.open()
+        searchItem?.beginSearchInteraction()
     }
 
     @objc func searchAction(_ sender: NSSearchField) {

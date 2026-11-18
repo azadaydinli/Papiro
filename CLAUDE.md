@@ -13,6 +13,10 @@ bölməkdir (Böl): `Document_0001.pdf`, `Document_0002.pdf` … Bu fayllar sonr
 - Hər dəyişiklikdən sonra `./build.sh` xətasız və xəbərdarlıqsız keçməli, tətbiq açılıb əllə yoxlanılmalıdır.
 - Tapşırıqlar ardıcıl edilir, hər biri ayrıca git commit olur. İstifadəçi razılaşmadan dəyişiklik edilmir; tərəddüd olanda soruşulur.
 - `UserDefaults` açarları (`splitFolder`, `splitPrefix`, `extractFolder`, `sidebarWidth`) dəyişdirilmir.
+- Üst bar Önizleme kimidir (sağdan): axtarış (`NSSearchToolbarItem`), Paylaş (`NSSharingServicePickerToolbarItem`),
+  Kiçilt / faiz (klik — seçimlər) / Böyüt, Səhifə / Şəbəkə, Geri al / Təkrarla, Sola / Sağa döndər, Alətlər (alətlər barını
+  göstərir/gizlədir, `toolsShown`). Qruplar şəkilli `NSToolbarItemGroup` (momentary seqmentli düymə: klik animasiyası və
+  ayırıcı xətlər); hissələrin aktivliyini AppKit yoxlamır, `updateToolbarStates` edir. Səhifə nömrəsi `window.subtitle`-dadır.
 - Bundle id: `az.local.papiro`.
 - `../epis-extension` qovluğu bu layihəyə aid deyil, ona toxunulmur (başqa sessiyada işlənir).
 

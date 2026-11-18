@@ -143,7 +143,7 @@ extension NSView {
     /// The part of this view not covered by `cover`: the tool strip floats over the top of the page view, and an
     /// overlay must neither draw nor take the mouse under it (the page there is blurred by the system).
     func area(below cover: NSView?) -> NSRect {
-        guard let c = cover, !c.isHidden, let w = window, c.window === w else { return bounds }
+        guard let c = cover, !c.isHiddenOrHasHiddenAncestor, let w = window, c.window === w else { return bounds }
         let r = convert(c.convert(c.bounds, to: nil), from: nil)
         var a = bounds
         a.size.height = max(0, min(a.maxY, r.minY) - a.minY)
