@@ -125,8 +125,9 @@ final class Updater: NSObject {
     private var progress: NSWindow?
 
     private func install(_ r: Release) {
-        if NSDocumentController.shared.hasEditedDocuments {
-            alert("Əvvəlcə sənədləri saxlayın", "Açıq sənədlərdə saxlanmamış dəyişikliklər var. Onları saxlayıb (⌘S) yenidən “Yeniləmələri yoxla…” seçin.")
+        // documents with a file save themselves when Papiro quits; one never saved needs a name first
+        if NSDocumentController.shared.documents.contains(where: { $0.isDocumentEdited && $0.fileURL == nil }) {
+            alert("Əvvəlcə yeni sənədi saxlayın", "Hələ adı olmayan sənəddə dəyişikliklər var. Onu saxlayıb (⌘S) yenidən “Yeniləmələri yoxla…” seçin.")
             return
         }
         guard let sha = r.sha else {

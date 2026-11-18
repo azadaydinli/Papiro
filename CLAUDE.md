@@ -75,7 +75,9 @@ yoxsa səhifə boşalır. Köhnə səhifənin işarəsi və `diskIndex`-i `repla
 - Müvəqqətidir: "Faylları yaz" hamısını yazıb bitirəndə (dayandırılmadan) həmin cildin faylı silinir
   (`PDFDoc.forgetStoredMarks`); 30 gündən çox dəyişməyən fayllar proqram açılanda silinir (`MarkStore.removeOld`).
 - Fingerprint: `SHA256(ilk 1 MB + fayl ölçüsü + səhifə sayı)` — fayl adı dəyişsə də işarələr qalır.
-- `groups` diskdəki faylın səhifə sırasına görədir; uğurlu saxlamadan sonra yeni fingerprint ilə yazılır, köhnə fayl silinir.
+- `groups` diskdəki faylın səhifə sırasına görədir; uğurlu saxlamadan sonra (avtomatik saxlama — `.autosaveInPlaceOperation` —
+  daxil) yeni fingerprint ilə yazılır, köhnə fayl silinir.
+- Sənədlər avtomatik saxlanır (`PDFDoc.autosavesInPlace = true`): ⌘S lazım deyil, bağlayanda sual yoxdur.
 - İşarə əməliyyatları geri alınır, amma sənədi "dəyişdirilib" etmir (`PDFDoc.updateChangeCount`).
 
 ## Yoxlama

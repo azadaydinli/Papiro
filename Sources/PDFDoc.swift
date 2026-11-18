@@ -29,7 +29,10 @@ final class PDFDoc: NSDocument {
     /// Content fingerprint of the PDF on disk: the name of its marks file (see MarkStore).
     private var fingerprint: String?
 
-    override class var autosavesInPlace: Bool { false }   // never rewrite a scan behind the user's back
+    /// Every change is saved by itself (macOS autosaves the file in place while you work, and when the window
+    /// closes or Papiro quits): no ⌘S needed, no "Save?" on closing. A document never saved yet (e.g. merged
+    /// files) is kept by macOS until it is given a name.
+    override class var autosavesInPlace: Bool { true }
 
     override func makeWindowControllers() {
         addWindowController(DocWindowController())
@@ -58,12 +61,14 @@ final class PDFDoc: NSDocument {
         guard pdf.write(to: url) else { throw CocoaError(.fileWriteUnknown) }
     }
 
-    /// After a successful save the file on disk has the current page order: marks move to the new
-    /// fingerprint, in the new order, and the old marks file goes.
+    /// After a successful save (also an automatic one) the file on disk has the current page order: marks move to
+    /// the new fingerprint, in the new order, and the old marks file goes. (A copy autosaved elsewhere, for a
+    /// document without a file, is not the document's file: marks stay as they are.)
     override func save(to url: URL, ofType typeName: String, for saveOperation: NSDocument.SaveOperationType,
                        completionHandler: @escaping (Error?) -> Void) {
         super.save(to: url, ofType: typeName, for: saveOperation) { [weak self] error in
-            if error == nil, let self, saveOperation == .saveOperation || saveOperation == .saveAsOperation {
+            let toFile: [NSDocument.SaveOperationType] = [.saveOperation, .saveAsOperation, .autosaveInPlaceOperation]
+            if error == nil, let self, toFile.contains(saveOperation) {
                 let old = self.fingerprint
                 self.rebuildDiskIndex()
                 self.fingerprint = MarkStore.fingerprint(of: url, pageCount: self.pdf.pageCount)
