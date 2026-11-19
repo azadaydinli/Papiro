@@ -44,7 +44,7 @@ final class PDFDoc: NSDocument {
         guard let d = PDFDocument(url: url) else { throw CocoaError(.fileReadCorruptFile) }
         if d.isLocked && !d.unlock(withPassword: "") {
             throw NSError(domain: NSCocoaErrorDomain, code: NSFileReadNoPermissionError,
-                          userInfo: [NSLocalizedDescriptionKey: "Bu PDF parolla qorunur."])
+                          userInfo: [NSLocalizedDescriptionKey: L("This PDF is password protected.")])
         }
         pdf = d
         rebuildDiskIndex()
@@ -185,13 +185,13 @@ final class PDFDoc: NSDocument {
     }
 
     func rotate(_ idx: [Int], by deg: Int) {
-        perform(deg < 0 ? "Sola döndər" : "Sağa döndər") {
+        perform(deg < 0 ? L("Rotate Left") : L("Rotate Right")) {
             for i in idx { if let p = pdf.page(at: i) { p.rotation = ((p.rotation + deg) % 360 + 360) % 360 } }
         }
     }
 
     func delete(_ idx: [Int]) {
-        perform("Səhifələri sil") {
+        perform(L("Delete Pages")) {
             for i in idx.sorted(by: >) where i < pdf.pageCount { pdf.removePage(at: i) }
         }
     }
@@ -206,7 +206,7 @@ final class PDFDoc: NSDocument {
         var rest = all.filter { !set.contains(ObjectIdentifier($0)) }
         let at = target - idx.filter { $0 < target }.count
         rest.insert(contentsOf: moving, at: max(0, min(at, rest.count)))
-        perform("Yerini dəyiş") { apply(Snapshot(pages: rest, rotations: rest.map(\.rotation))) }
+        perform(L("Move Pages")) { apply(Snapshot(pages: rest, rotations: rest.map(\.rotation))) }
         let start = max(0, min(at, all.count - moving.count))
         return Array(start..<(start + moving.count))
     }
@@ -215,7 +215,7 @@ final class PDFDoc: NSDocument {
     @discardableResult
     func insert(_ newPages: [PDFPage], at index: Int) -> [Int] {
         let at = max(0, min(index, pdf.pageCount))
-        perform("Səhifə əlavə et") {
+        perform(L("Add Pages")) {
             for (k, p) in newPages.enumerated() { pdf.insert(p, at: at + k) }
         }
         return Array(at..<(at + newPages.count))
@@ -252,7 +252,7 @@ final class PDFDoc: NSDocument {
     // so closing after only marking must not ask "Save?". NSDocument counts changes through the undo manager;
     // `updateChangeCount` below leaves out changes whose undo action has one of these names. Page edits use
     // other names, so a mixed sequence (Sənəd et → Döndər → ⌘Z → ⌘Z) still counts only the page edit.
-    private static let markActions: Set<String> = ["Sənəd et", "Ayır", "Hamısını ayır"]
+    private static let markActions: Set<String> = [L("Make Document"), L("Separate"), L("Separate All")]
 
     override func updateChangeCount(_ change: NSDocument.ChangeType) {
         let name: String?
@@ -281,21 +281,21 @@ final class PDFDoc: NSDocument {
         let newPages = range.compactMap { pdf.page(at: $0) }
         removeFromGroups(Array(range))
         groups.append(newPages)
-        registerMarks(before, "Sənəd et")
+        registerMarks(before, L("Make Document"))
         changed()
     }
 
     func unmark(_ idx: [Int]) {
         let before = groups
         removeFromGroups(idx)
-        registerMarks(before, "Ayır")
+        registerMarks(before, L("Separate"))
         changed()
     }
 
     func unmarkAll() {
         let before = groups
         groups = []
-        registerMarks(before, "Hamısını ayır")
+        registerMarks(before, L("Separate All"))
         changed()
     }
 

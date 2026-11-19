@@ -14,6 +14,7 @@ swiftc -swift-version 5 -O -target "$(uname -m)-apple-macos26.0" -module-name Pa
   Sources/*.swift -o "$APP/Contents/MacOS/Papiro" -framework AppKit -framework PDFKit
 cp Info.plist "$APP/Contents/Info.plist"
 [ -f AppIcon.icns ] && cp AppIcon.icns "$APP/Contents/Resources/"
+cp -R Resources/*.lproj "$APP/Contents/Resources/"      # English and Turkish texts
 xattr -cr "$APP"
 codesign --force --deep -s - "$APP"
 mkdir -p build.noindex

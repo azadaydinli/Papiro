@@ -1,7 +1,7 @@
 import AppKit
 import PDFKit
 
-// "Ağart": the user draws rectangles over unwanted parts of the text; "Ağart" paints them white for good.
+// "White Out": the user draws rectangles over unwanted parts of the text; "White Out" paints them white for good.
 // Rectangles are kept in page space (unrotated PDF points) per page until they are applied.
 
 enum Whiteout {
@@ -16,7 +16,7 @@ enum Whiteout {
 extension PDFDoc {
     /// Paint the given rectangles white, page by page, as one undoable step.
     func whiteout(_ marks: [(index: Int, rects: [CGRect])]) {
-        perform("Ağart") {
+        perform(L("White Out")) {
             for m in marks {
                 guard let old = pdf.page(at: m.index), let (new, owner) = Whiteout.painted(old, m.rects) else { continue }
                 keepAlive.append(owner)
@@ -28,7 +28,7 @@ extension PDFDoc {
     }
 }
 
-/// Drawn over the page view in "Ağart" mode: press and drag to draw a rectangle; on release it is painted white.
+/// Drawn over the page view in "White Out" mode: press and drag to draw a rectangle; on release it is painted white.
 final class WhiteoutOverlay: NSView {
     weak var pdfView: PDFView?
     /// The tool strip over the top of the page view (see `area(below:)`).

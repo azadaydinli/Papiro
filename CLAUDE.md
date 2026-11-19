@@ -9,14 +9,18 @@ bölməkdir (Böl): `Document_0001.pdf`, `Document_0002.pdf` … Bu fayllar sonr
 - AppKit + PDFKit, xarici asılılıq yoxdur, Xcode layihəsi yoxdur (`swiftc` ilə yığılır).
 - macOS 26+, Apple-ın native Liquid Glass görünüşü: öz çəkilmiş görünüşlər yazılmır, sistemin elementlərindən istifadə olunur
   (`NSSplitViewController` + sidebar, `NSSplitViewItemAccessoryViewController`, `.glass` düymələr, `borderShape`, `tintProminence`).
-- UI mətnləri Azərbaycan dilindədir.
+- UI mətnləri iki dildədir: ingiliscə və türkcə (Azərbaycan dili yoxdur). Kodda mətn ingiliscə yazılır və `L("…")` ilə
+  çağırılır (`Localize.swift`; dəyərli mətn: `L("Files created: %d", n)`), türkcəsi `Resources/tr.lproj/Localizable.strings`-də.
+  Yeni mətn əlavə edəndə türkcəsi də o fayla yazılır. Dili macOS seçir (istifadəçinin dil sırasında türkcə ingiliscədən
+  əvvəldirsə türkcə); macOS-un öz menyu bəndləri (Çoğalt, Geri Dön…) də həmin dildə olur, onlara toxunulmur.
 - Hər dəyişiklikdən sonra `./build.sh` xətasız və xəbərdarlıqsız keçməli, tətbiq açılıb əllə yoxlanılmalıdır.
 - Tapşırıqlar ardıcıl edilir, hər biri ayrıca git commit olur. İstifadəçi razılaşmadan dəyişiklik edilmir; tərəddüd olanda soruşulur.
 - `UserDefaults` açarları (`splitFolder`, `splitPrefix`, `extractFolder`, `sidebarWidth`) dəyişdirilmir.
-- Üst bar Önizleme kimidir (sağdan): axtarış (`NSSearchToolbarItem`), Paylaş (`NSSharingServicePickerToolbarItem`),
+- Üst bar Önizleme kimidir (sağdan): axtarış (`NSSearchToolbarItem`), Çap et / Paylaş (bir qrup; Paylaş `NSSharingServicePicker`-i düymənin altında açır),
   Kiçilt / faiz (klik — seçimlər) / Böyüt, Səhifə / Şəbəkə, Geri al / Təkrarla, Sola / Sağa döndər, Alətlər (alətlər barını
   göstərir/gizlədir, `toolsShown`). Qruplar şəkilli `NSToolbarItemGroup` (momentary seqmentli düymə: klik animasiyası və
-  ayırıcı xətlər); hissələrin aktivliyini AppKit yoxlamır, `updateToolbarStates` edir. Səhifə nömrəsi `window.subtitle`-dadır.
+  ayırıcı xətlər); hissələrin aktivliyini AppKit yoxlamır, `updateToolbarStates` edir. İpuclarında yalnız düymənin adı olur.
+- Başlıq altında yazı yoxdur: səhifə nömrəsi ("3 / 120") və şəbəkədə seçim / işarələr sağ aşağı küncdəki şüşə balondadır (`PageBubble`).
 - Bundle id: `az.local.papiro`.
 - `../epis-extension` qovluğu bu layihəyə aid deyil, ona toxunulmur (başqa sessiyada işlənir).
 
@@ -38,7 +42,7 @@ yeni bir "Papiro" qoyur və Masaüstündəki nüsxə də quraşdırılmışın y
 
 ## Buraxılış (GitHub)
 - İctimai repo: `github.com/azadaydinli/Papiro`. İmzasız (ad-hoc) paylanır; ilk quraşdırmada "Yenə də aç" lazımdır (README).
-- `./release.sh 1.0.1 qeydler.txt`: versiya + build nömrəsi, `Papiro.dmg` (insanlar üçün), `Papiro.zip` + `.sha256`
+- `./release.sh 1.0.3 notes.txt` (buraxılış qeydləri türkcə və ingiliscə yazılır): versiya + build nömrəsi, `Papiro.dmg` (insanlar üçün), `Papiro.zip` + `.sha256`
   (yeniləyici üçün), GitHub-da `v1.0.1` release. Endirmə linki: `releases/latest/download/Papiro.dmg`.
 - Lokal git tarixçəsi GitHub-a **göndərilmir**: hər buraxılışda cari ağac GitHub-ın `main`-i üzərinə tək commit kimi
   gedir, müəllif GitHub noreply ünvanıdır. `git push` etmə; yalnız `release.sh`.
@@ -47,17 +51,20 @@ yeni bir "Papiro" qoyur və Masaüstündəki nüsxə də quraşdırılmışın y
 ## Quruluş (`Sources/`)
 | Fayl | Nə edir |
 |---|---|
+| `Localize.swift` | `L("…")`: ingiliscə mətn açardır, türkcəsi `Resources/tr.lproj/Localizable.strings`-dən gəlir |
 | `main.swift` | Proqramın başlanğıcı, menyular, "Faylları birləşdir" |
 | `Updater.swift` | GitHub Releases-dən yeniləmə: gündə bir dəfə yoxlama, bildiriş, Papiro.zip + SHA-256 yoxlaması, əvəzetmə və yenidən açılış |
-| `Welcome.swift` | Başlanğıc pəncərəsi (sənəd açıq olmayanda): "Fayl seç" və "Son baxılanlar" |
+| `Welcome.swift` | Başlanğıc pəncərəsi (Papiro faylsız açılanda və ya Dock-dan çağırılanda): "Aç" və "Son baxılanlar". Son sənəd bağlananda Papiro bağlanır, bu pəncərəyə qayıtmır |
 | `PDFDoc.swift` | `NSDocument`: PDF, səhifə əməliyyatları (`perform` → geri alınır), Böl işarələri (`groups`), diskdəki sıra (`diskIndex`) |
 | `Marks.swift` | `MarkStore`: yarımçıq işarələmənin bərpası üçün işarələrin yerli müvəqqəti saxlanması |
-| `DocWindowController.swift` | Pəncərə: üst bar, alətlər barı, sol panel, sağda imza paneli (inspector), rejimlər (`page`, `grid`, `split`, `margins`, `marginsApply`, `whiteout`, `text`), bütün əmrlər |
+| `DocWindowController.swift` | Pəncərə: üst bar, alətlər barı, sol panel, sağda imza paneli (inspector), rejimlər (`page`, `grid`, `split`, `margins`, `marginsApply`, `whiteout`, `text`, `highlight`), bütün əmrlər |
+| `Sidebar.swift` | Sol panel (`PageSidebar`, öz `NSCollectionView`-u): səhifələrin cari görüntüsü (döndərilmiş, mətn / imza ilə), Önizleme kimi seçim fonu, ⌘/⇧ ilə bir neçə səhifə (Sil, İxrac et, Döndər onlara aiddir), sağ klik menyusu, sürükləyib yerini dəyişmək |
 | `PageGrid.swift` | Səhifələr şəbəkəsi, Böl rejimində toplu vərəqlər (stack) və yığılma animasiyası, Shift+klik, "Tətbiq et" checkbox-ları |
 | `SplitPanel.swift` | "Faylları yaz": qovluq, nömrələmə (qovluqdakı ən böyük nömrədən davam), fonda yazma, `.partial`, "Dayandır" |
 | `Margins.swift` | "Kənarları təmizlə": məzmunun avtomatik tapılması (deşiklər və küncdəki nömrələr xaric), ağartma |
 | `Redact.swift` | "Ağart": əl ilə çəkilən düzbucaqlıların ağardılması |
 | `Annotate.swift` | "Mətn" (FreeText qutuları, `TextOverlay`) və "İmza" (sağ panel `SignaturePanel`, PNG-lər `~/Library/Application Support/Papiro/Signatures/`-də, `ImageAnnotation` Stamp); geri alınan `swapAnnotation` / `movedAnnotation` |
+| `Highlight.swift` | "Vurgula" (Önizleme kimi, alətlər barında bir kapsulda: `NSSegmentedControl`, hissə 1 aləti açır, hissə 2 üslub menyusu): rəng (sarı, yaşıl, mavi, çəhrayı, bənövşəyi), altdan və ya üstdən xətt; seçilən mətnin hər sətri bir PDF annotasiyası (Highlight / Underline / StrikeOut), bir addımda geri alınır; sağ klik: "Remove Highlight" (tr: "Vurguyu Kaldır") |
 | `Scan.swift` | Skan səhifənin tanınması (səhifə boyda şəkil) və həqiqi silmə: səhifə skan həlletməsində yenidən şəkil kimi çəkilir |
 
 "Kənarları təmizlə" və "Ağart" yalnız skan səhifələrdə işləyir və üstünü örtmür, silir: `Scan.redrawn` səhifəni skanın

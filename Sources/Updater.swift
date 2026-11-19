@@ -1,7 +1,7 @@
 import AppKit
 import CryptoKit
 
-/// Updates from GitHub Releases (github.com/azadaydinli/Papiro). Once a day (and from "Yeniləmələri yoxla…") Papiro
+/// Updates from GitHub Releases (github.com/azadaydinli/Papiro). Once a day (and from "Check for Updates") Papiro
 /// asks GitHub for the latest release; if it is newer, a window shows what is new, and "Yenilə" downloads
 /// Papiro.zip, checks it against Papiro.zip.sha256 from the same release, puts the new app in place of this one
 /// and opens it. Nothing about the user or their files is sent: only the request for the latest release.
@@ -45,7 +45,7 @@ final class Updater: NSObject {
         check(userInitiated: false)
     }
 
-    /// Papiro → "Yeniləmələri yoxla…".
+    /// Papiro → "Check for Updates".
     @objc func checkNow(_ sender: Any?) { check(userInitiated: true) }
 
     private func check(userInitiated: Bool) {
@@ -63,8 +63,8 @@ final class Updater: NSObject {
                 UserDefaults.standard.set(Date(), forKey: self.lastCheckKey)
                 guard let release else {
                     if userInitiated {
-                        let why = error?.localizedDescription ?? (status == 404 ? "GitHub-da hələ buraxılış yoxdur." : "GitHub cavabı: \(status)")
-                        self.alert("Yeniləmələri yoxlamaq olmadı", why)
+                        let why = error?.localizedDescription ?? (status == 404 ? L("There is no release on GitHub yet.") : L("GitHub replied: %d", status))
+                        self.alert(L("Could not check for updates"), why)
                     }
                     return
                 }
@@ -72,7 +72,7 @@ final class Updater: NSObject {
                     if !userInitiated, UserDefaults.standard.string(forKey: self.skipKey) == release.version { return }
                     self.offer(release)
                 } else if userInitiated {
-                    self.alert("Papiro ən son versiyadır", "Sizdəki versiya: \(Self.currentVersion)")
+                    self.alert(L("Papiro is up to date"), L("Your version: %@", Self.currentVersion))
                 }
             }
         }.resume()
@@ -95,8 +95,8 @@ final class Updater: NSObject {
 
     private func offer(_ r: Release) {
         let a = NSAlert()
-        a.messageText = "Papiro \(r.version) hazırdır"
-        a.informativeText = "Sizdəki versiya: \(Self.currentVersion). Yeniləmə yüklənəcək, Papiro bağlanıb yeni versiya ilə açılacaq."
+        a.messageText = L("Papiro %@ is available", r.version)
+        a.informativeText = L("Your version: %@. The update is downloaded, then Papiro closes and opens again with the new version.", Self.currentVersion)
         if !r.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 380, height: 160))
             text.string = r.notes
@@ -109,9 +109,9 @@ final class Updater: NSObject {
             scroll.drawsBackground = false
             a.accessoryView = scroll
         }
-        a.addButton(withTitle: "Yenilə")
-        a.addButton(withTitle: "Sonra")
-        a.addButton(withTitle: "Bu versiyanı ötür")
+        a.addButton(withTitle: L("Update"))
+        a.addButton(withTitle: L("Later"))
+        a.addButton(withTitle: L("Skip This Version"))
         NSApp.activate()
         switch a.runModal() {
         case .alertFirstButtonReturn: install(r)
@@ -127,19 +127,19 @@ final class Updater: NSObject {
     private func install(_ r: Release) {
         // documents with a file save themselves when Papiro quits; one never saved needs a name first
         if NSDocumentController.shared.documents.contains(where: { $0.isDocumentEdited && $0.fileURL == nil }) {
-            alert("Əvvəlcə yeni sənədi saxlayın", "Hələ adı olmayan sənəddə dəyişikliklər var. Onu saxlayıb (⌘S) yenidən “Yeniləmələri yoxla…” seçin.")
+            alert(L("Save the new document first"), L("A document without a name has changes. Save it (⌘S) and choose “Check for Updates” again."))
             return
         }
         guard let sha = r.sha else {
-            alert("Yeniləmə quraşdırılmadı", "Bu buraxılışda yoxlama faylı (Papiro.zip.sha256) yoxdur.")
+            alert(L("The update was not installed"), L("This release has no checksum file (Papiro.zip.sha256)."))
             return
         }
         let target = Bundle.main.bundleURL
         guard FileManager.default.isWritableFile(atPath: target.deletingLastPathComponent().path) else {
-            alert("Yeniləmə quraşdırılmadı", "“\(target.deletingLastPathComponent().path)” qovluğuna yazmaq icazəsi yoxdur. Yeni versiyanı GitHub-dan endirin.")
+            alert(L("The update was not installed"), L("Papiro cannot write to “%@”. Download the new version from GitHub.", target.deletingLastPathComponent().path))
             return
         }
-        showProgress("Papiro \(r.version) yüklənir…")
+        showProgress(L("Downloading Papiro %@…", r.version))
         Task {
             do {
                 let work = FileManager.default.temporaryDirectory.appendingPathComponent("papiro-update-\(UUID().uuidString)", isDirectory: true)
@@ -152,7 +152,7 @@ final class Updater: NSObject {
             } catch {
                 await MainActor.run {
                     self.hideProgress()
-                    self.alert("Yeniləmə quraşdırılmadı", error.localizedDescription)
+                    self.alert(L("The update was not installed"), error.localizedDescription)
                 }
             }
         }
@@ -169,12 +169,12 @@ final class Updater: NSObject {
         shaReq.setValue("Papiro/\(currentVersion)", forHTTPHeaderField: "User-Agent")
         let (shaData, _) = try await URLSession.shared.data(for: shaReq)
         guard let expected = String(data: shaData, encoding: .utf8)?.split(whereSeparator: { $0 == " " || $0 == "\n" }).first.map(String.init),
-              expected.count == 64 else { throw UpdateError("Yoxlama faylı oxunmadı.") }
+              expected.count == 64 else { throw UpdateError(L("The checksum file could not be read.")) }
 
         var zipReq = URLRequest(url: r.zip)
         zipReq.setValue("Papiro/\(currentVersion)", forHTTPHeaderField: "User-Agent")
         let (tmp, response) = try await URLSession.shared.download(for: zipReq)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw UpdateError("Yükləmə alınmadı.") }
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw UpdateError(L("The download failed.")) }
         let zip = work.appendingPathComponent("Papiro.zip")
         try FileManager.default.moveItem(at: tmp, to: zip)
         return try unpackChecked(zip: zip, expectedSHA: expected, version: r.version, in: work)
@@ -183,16 +183,16 @@ final class Updater: NSObject {
     /// Check the zip's SHA-256, unpack it and check that it holds Papiro of that version, correctly signed.
     static func unpackChecked(zip: URL, expectedSHA: String, version: String, in work: URL) throws -> URL {
         let digest = SHA256.hash(data: try Data(contentsOf: zip, options: .mappedIfSafe)).map { String(format: "%02x", $0) }.joined()
-        guard digest == expectedSHA.lowercased() else { throw UpdateError("Yüklənən fayl yoxlamadan keçmədi (SHA-256 uyğun deyil).") }
+        guard digest == expectedSHA.lowercased() else { throw UpdateError(L("The downloaded file failed the check (SHA-256 does not match).")) }
         let out = work.appendingPathComponent("unpacked", isDirectory: true)
-        try run("/usr/bin/ditto", ["-x", "-k", zip.path, out.path], "Arxiv açılmadı.")
+        try run("/usr/bin/ditto", ["-x", "-k", zip.path, out.path], L("The archive could not be opened."))
         let app = out.appendingPathComponent("Papiro.app")
         guard let info = NSDictionary(contentsOf: app.appendingPathComponent("Contents/Info.plist")),
               info["CFBundleIdentifier"] as? String == Bundle.main.bundleIdentifier ?? "az.local.papiro",
               info["CFBundleShortVersionString"] as? String == version else {
-            throw UpdateError("Arxivdə gözlənilən Papiro \(version) yoxdur.")
+            throw UpdateError(L("The archive does not hold the expected Papiro %@.", version))
         }
-        try run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path], "Yeni proqramın imzası pozulub.")
+        try run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path], L("The new app’s signature is broken."))
         return app
     }
 
@@ -221,7 +221,7 @@ final class Updater: NSObject {
             p.arguments = [script.path, "\(ProcessInfo.processInfo.processIdentifier)", target.path, newApp.path, work.path]
             try p.run()
         } catch {
-            alert("Yeniləmə quraşdırılmadı", error.localizedDescription)
+            alert(L("The update was not installed"), error.localizedDescription)
             return
         }
         NSApp.terminate(nil)
@@ -246,7 +246,7 @@ final class Updater: NSObject {
 
     private func showProgress(_ text: String) {
         let w = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 320, height: 90), styleMask: [.titled], backing: .buffered, defer: false)
-        w.title = "Yeniləmə"
+        w.title = L("Update")
         let label = NSTextField(labelWithString: text)
         let bar = NSProgressIndicator()
         bar.isIndeterminate = true

@@ -1,13 +1,13 @@
 import AppKit
 import QuickLookThumbnailing
 
-/// The start window, shown when no document is open: "Fayl seç" in the middle and, under it, the files opened
-/// last ("Son baxılanlar"); a click opens one. A PDF dropped on the window opens too.
+/// The start window, shown when no document is open: "Open" in the middle and, under it, the files opened
+/// last ("Recently Viewed"); a click opens one. A PDF dropped on the window opens too.
 final class WelcomeController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate {
     static let shared = WelcomeController()
 
     private let table = NSTableView()
-    private let empty = NSTextField(labelWithString: "Hələ fayl açılmayıb")
+    private let empty = NSTextField(labelWithString: L("No files opened yet"))
     private var recents: [URL] = []
     private var thumbs: [URL: NSImage] = [:]
 
@@ -52,19 +52,27 @@ final class WelcomeController: NSWindowController, NSTableViewDataSource, NSTabl
         let name = NSTextField(labelWithString: "Papiro")
         name.font = .systemFont(ofSize: 28, weight: .semibold)
 
-        let open = NSButton(title: "Fayl seç", image: NSImage(systemSymbolName: "folder", accessibilityDescription: nil)!,
-                            target: self, action: #selector(chooseFile(_:)))
-        open.imagePosition = .imageLeading
+        // the title alone, so it is centred in the whole capsule; the folder sits on its left, apart from it
+        let open = NSButton(title: L("Open"), target: self, action: #selector(chooseFile(_:)))
         open.bezelStyle = .glass
         open.controlSize = .extraLarge
         open.borderShape = .capsule
         open.tintProminence = .primary
         open.font = .systemFont(ofSize: 15, weight: .semibold)
         open.keyEquivalent = "\r"
-        open.toolTip = "PDF faylı seç (⌘O)"
+        open.toolTip = L("Open")
         open.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
+        let folder = ClickThroughImageView(image: NSImage(systemSymbolName: "folder", accessibilityDescription: nil)!)
+        folder.symbolConfiguration = .init(pointSize: 15, weight: .semibold)
+        folder.contentTintColor = .white
+        folder.translatesAutoresizingMaskIntoConstraints = false
+        open.addSubview(folder)
+        NSLayoutConstraint.activate([
+            folder.leadingAnchor.constraint(equalTo: open.leadingAnchor, constant: 20),
+            folder.centerYAnchor.constraint(equalTo: open.centerYAnchor),
+        ])
 
-        let header = NSTextField(labelWithString: "Son baxılanlar")
+        let header = NSTextField(labelWithString: L("Recently Viewed"))
         header.font = .systemFont(ofSize: 13, weight: .semibold)
         header.textColor = .secondaryLabelColor
 
@@ -126,7 +134,7 @@ final class WelcomeController: NSWindowController, NSTableViewDataSource, NSTabl
         NSDocumentController.shared.openDocument(withContentsOf: url, display: true) { _, _, error in
             guard let error else { return }
             let a = NSAlert(error: error)
-            a.messageText = "Fayl açılmadı"
+            a.messageText = L("The file could not be opened")
             a.informativeText = "\(url.lastPathComponent)\n\(error.localizedDescription)"
             if let w = shared.window, w.isVisible { a.beginSheetModal(for: w) } else { a.runModal() }
             shared.reloadRecents()
@@ -200,4 +208,9 @@ private final class DropWindow: NSWindow, NSDraggingDestination {
         urls.forEach(WelcomeController.open)
         return !urls.isEmpty
     }
+}
+
+/// An image inside a button that leaves clicks to the button.
+final class ClickThroughImageView: NSImageView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

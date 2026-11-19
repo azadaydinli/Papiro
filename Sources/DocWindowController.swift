@@ -30,6 +30,14 @@ final class PageView: PDFView {
     override func mouseDown(with event: NSEvent) {
         if owner?.signatureMouseDown(event) == true { return }
         super.mouseDown(with: event)
+        owner?.selectionFinished()      // PDFView follows the drag inside mouseDown: the selection is complete here
+    }
+    override func mouseUp(with event: NSEvent) {
+        super.mouseUp(with: event)
+        owner?.selectionFinished()
+    }
+    override func menu(for event: NSEvent) -> NSMenu? {
+        owner?.markupMenu(for: event) ?? super.menu(for: event)
     }
 
     /// PDFKit draws annotations (text boxes, signatures) in layers of their own at 1 pixel per point, while the
@@ -67,21 +75,64 @@ final class PageView: PDFView {
     }
 }
 
+/// The glass bubble in the bottom-right corner: the page number ("3 / 120"), or in the grid what is selected or
+/// marked, in numbers and symbols. Clicks go through it to the page below.
+final class PageBubble: NSGlassEffectView {
+    private let row = NSStackView()
+
+    init() {
+        super.init(frame: .zero)
+        row.spacing = 4
+        row.edgeInsets = NSEdgeInsets(top: 5, left: 12, bottom: 5, right: 12)
+        contentView = row
+        cornerRadius = 13
+        translatesAutoresizingMaskIntoConstraints = false
+        heightAnchor.constraint(equalToConstant: 26).isActive = true
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    /// Parts in a row: a symbol, a text, or both (a symbol before its text).
+    func show(_ parts: [(symbol: String?, text: String)]) {
+        isHidden = parts.isEmpty
+        var views: [NSView] = []
+        for (k, part) in parts.enumerated() {
+            if k > 0 { views.append(label("·", secondary: true)) }
+            if let name = part.symbol, let img = NSImage(systemSymbolName: name, accessibilityDescription: nil) {
+                let v = NSImageView(image: img)
+                v.symbolConfiguration = .init(pointSize: 11, weight: .medium)
+                v.contentTintColor = .secondaryLabelColor
+                views.append(v)
+            }
+            if !part.text.isEmpty { views.append(label(part.text, secondary: false)) }
+        }
+        row.setViews(views, in: .leading)
+    }
+
+    private func label(_ s: String, secondary: Bool) -> NSTextField {
+        let l = NSTextField(labelWithString: s)
+        l.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        l.textColor = secondary ? .secondaryLabelColor : .labelColor
+        return l
+    }
+}
+
 /// One document window (tab).
 /// - page: one page at a time, thumbnails panel on the left;
-/// - grid: all pages, for organising (rotate, delete, move, extract) — "Böl" is here;
-/// - split: entered with "Böl" — pages are marked as documents, which collapse into stacks; then files are written;
-/// - margins: "Kənarları təmizlə" — a frame decides what stays; everything outside is removed (scanned pages only);
-/// - marginsApply: its "Tətbiq et" — all pages in the grid with checkboxes, to choose which pages to clean;
-/// - whiteout: "Ağart" — rectangles drawn by hand are removed (scanned pages only);
-/// - text: "Mətn" — text boxes typed on the pages.
-/// The signature panel ("İmza") opens on the right in the page view; signatures are dragged onto pages.
+/// - grid: all pages, for organising (rotate, delete, move, extract) — "Split" is here;
+/// - split: entered with "Split" — pages are marked as documents, which collapse into stacks; then files are written;
+/// - margins: "Clean Margins" — a frame decides what stays; everything outside is removed (scanned pages only);
+/// - marginsApply: its "Apply" — all pages in the grid with checkboxes, to choose which pages to clean;
+/// - whiteout: "White Out" — rectangles drawn by hand are removed (scanned pages only);
+/// - text: "Text" — text boxes typed on the pages.
+/// The signature panel ("Signature") opens on the right in the page view; signatures are dragged onto pages.
 final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSMenuItemValidation,
-                                 NSToolbarItemValidation, NSSearchFieldDelegate, NSSharingServicePickerToolbarItemDelegate {
-    enum Mode { case page, grid, split, margins, marginsApply, whiteout, text }
+                                 NSToolbarItemValidation, NSSearchFieldDelegate {
+    enum Mode { case page, grid, split, margins, marginsApply, whiteout, text, highlight }
 
     let pdfView = PageView()
-    let thumbs = PDFThumbnailView()
+    let side = PageSidebar()
     let grid = PageGrid()
     private let strip = NSView()
     private let splitVC = NSSplitViewController()
@@ -97,6 +148,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     /// The left panel can be narrowed a little (from its original 176 px) and widened up to 400 px.
     private static let sidebarRange: ClosedRange<CGFloat> = 150...400
     private let content = NSView()
+    private let bubble = PageBubble()
     private var modeGroup: NSToolbarItemGroup?
     /// Rotate, undo / redo and zoom: segmented controls (as "Səhifə / Şəbəkə"), so they react to a click like the
     /// other toolbar buttons and show dividers between their parts.
@@ -153,7 +205,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         scanned[ObjectIdentifier(p)] = s
         return s
     }
-    /// "Kənarları təmizlə" and "Ağart" need at least one scanned page.
+    /// "Clean Margins" and "White Out" need at least one scanned page.
     private var hasScans: Bool { pdfDoc?.pages.contains(where: isScan) ?? false }
     private var inGrid: Bool { mode == .grid || mode == .split || mode == .marginsApply }
 
@@ -171,7 +223,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         switch mode {
         case .margins: cancelMargins(nil)
         case .marginsApply: marginsBack(nil)
-        case .whiteout, .text: setMode(.page)
+        case .whiteout, .text, .highlight: setMode(.page)
         default: return false
         }
         return true
@@ -200,7 +252,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
             guard let d = pdfDoc else { return }
             WelcomeController.hide()
             pdfView.document = d.pdf
-            noteRotations()
+            side.reload(select: [0])
             grid.reload()
             updatePageLabel()
             updateStrip()
@@ -239,10 +291,14 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
 
         let sideVC = NSViewController()
         sideVC.view = sidebar
-        thumbs.pdfView = pdfView
-        thumbs.backgroundColor = .clear
-        thumbs.allowsMultipleSelection = true      // ⌘/⇧-click: pages for "Tətbiq et → Aşağıdakı səhifələrə"
-        pin(thumbs, in: sidebar, safeTop: true)
+        side.owner = self
+        side.show = { [weak self] i in
+            guard let self, let p = self.pdfDoc?.pdf.page(at: i), p !== self.pdfView.currentPage else { return }
+            self.pdfView.go(to: p)
+        }
+        side.selectionChanged = { [weak self] in self?.selectionChanged() }
+        side.collection.menu = sideMenu()
+        pin(side.scroll, in: sidebar, safeTop: true)
         sidebarItem = NSSplitViewItem(sidebarWithViewController: sideVC)
         sidebarItem.minimumThickness = Self.sidebarRange.lowerBound
         sidebarItem.maximumThickness = Self.sidebarRange.upperBound
@@ -308,9 +364,14 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         pin(textOverlay, in: content, safeTop: true)
         textOverlay.isHidden = true
         textOverlay.swap = { [weak self] old, new, page, name in self?.pdfDoc?.swapAnnotation(old, new, on: page, name: name) }
-        textOverlay.moved = { [weak self] a, from, page in self?.pdfDoc?.movedAnnotation(a, from: from, on: page, name: "Mətni yerini dəyiş") }
+        textOverlay.moved = { [weak self] a, from, page in self?.pdfDoc?.movedAnnotation(a, from: from, on: page, name: L("Move Text")) }
         textOverlay.showStyle = { [weak self] s in self?.showTextStyle(s) }
         textOverlay.onEscape = { [weak self] in self?.setMode(.page) }
+        content.addSubview(bubble)
+        NSLayoutConstraint.activate([
+            bubble.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            bubble.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
+        ])
 
         NotificationCenter.default.addObserver(self, selector: #selector(pageChanged), name: .PDFViewPageChanged, object: pdfView)
         DispatchQueue.main.async {
@@ -321,6 +382,8 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
             }
         }
         NotificationCenter.default.addObserver(self, selector: #selector(scaleChanged), name: .PDFViewScaleChanged, object: pdfView)
+        pdfView.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(pageViewResized), name: NSView.frameDidChangeNotification, object: pdfView)
 
         // its own identifier: toolbars sharing one keep the same items, so a search opened in one window
         // would open in every other window as well
@@ -336,20 +399,20 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
 
     // MARK: tool strip
 
-    private lazy var bExtract = tool("", "arrow.up.doc", #selector(extractPages(_:)), tip: "Çıxar: seçilmiş səhifələri ayrıca fayl kimi saxla (⌥⌘E)")
-    private lazy var bAdd = tool("", "plus", #selector(showAddMenu(_:)), tip: "Əlavə et: başqa PDF-in səhifələri və ya boş səhifə")
-    private lazy var bDelete = tool("", "trash", #selector(deletePages(_:)), tip: "Sil: seçilmiş səhifələri sil (⌘⌫)")
-    private lazy var bMargins = tool("Kənarları təmizlə", "crop", #selector(beginMargins(_:)), tip: "Deşik izlərini və kənar ləkələri ağ et (⌘K)", toggle: true)
-    private lazy var bText = tool("", "character.textbox", #selector(beginText(_:)), tip: "Mətn əlavə et: səhifədə qutu çəkib yazın", toggle: true)
-    private lazy var bSign = tool("", "signature", #selector(toggleSignatures(_:)), tip: "İmza: sağda imzalar paneli, imzanı səhifəyə sürükləyin", toggle: true)
-    private lazy var bBold = tool("", "bold", #selector(textStyleChanged(_:)), tip: "Qalın", toggle: true)
-    private lazy var bItalic = tool("", "italic", #selector(textStyleChanged(_:)), tip: "Kursiv", toggle: true)
+    private lazy var bExtract = tool("", "arrow.up.doc", #selector(extractPages(_:)), tip: L("Export"))
+    private lazy var bAdd = tool("", "plus", #selector(showAddMenu(_:)), tip: L("Add"))
+    private lazy var bDelete = tool("", "trash", #selector(deletePages(_:)), tip: L("Delete"))
+    private lazy var bMargins = tool(L("Clean Margins"), "crop", #selector(beginMargins(_:)), tip: L("Clean Margins"), toggle: true)
+    private lazy var bText = tool("", "character.textbox", #selector(beginText(_:)), tip: L("Add Text"), toggle: true)
+    private lazy var bSign = tool("", "signature", #selector(toggleSignatures(_:)), tip: L("Add Signature"), toggle: true)
+    private lazy var bBold = tool("", "bold", #selector(textStyleChanged(_:)), tip: L("Bold"), toggle: true)
+    private lazy var bItalic = tool("", "italic", #selector(textStyleChanged(_:)), tip: L("Italic"), toggle: true)
     private lazy var fontPopup: NSPopUpButton = {
         let p = NSPopUpButton(frame: .zero, pullsDown: false)
         p.addItems(withTitles: NSFontManager.shared.availableFontFamilies.sorted())
         p.target = self
         p.action = #selector(textStyleChanged(_:))
-        p.toolTip = "Şrift"
+        p.toolTip = L("Font")
         p.controlSize = .large
         p.widthAnchor.constraint(equalToConstant: 170).isActive = true
         return p
@@ -359,7 +422,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         p.addItems(withTitles: TextStyle.sizes.map { "\(Int($0))" })
         p.target = self
         p.action = #selector(textStyleChanged(_:))
-        p.toolTip = "Ölçü (pt)"
+        p.toolTip = L("Size")
         p.controlSize = .large
         return p
     }()
@@ -367,31 +430,51 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         let w = NSColorWell(style: .minimal)
         w.target = self
         w.action = #selector(textStyleChanged(_:))
-        w.toolTip = "Rəng"
+        w.toolTip = L("Color")
         return w
     }()
-    private lazy var bWhite = tool("", "eraser", #selector(beginWhiteout(_:)), tip: "Ağart: mətndə lazımsız hissələri əl ilə ağart (⌥⌘W)", toggle: true)
-    private lazy var bSplit = tool("Sənədlərə parçala", "scissors", #selector(splitVolume(_:)), tip: "Cildi sənədlərə parçala (⌘B)")
-    private lazy var bAuto = tool("", "wand.and.stars", #selector(marginsAuto(_:)), tip: "Avtomatik tap: ekrandakı səhifənin çərçivəsini yenidən tap")
-    private lazy var bMark = tool("Sənəd et", "rectangle.stack.badge.plus", #selector(markDocument(_:)), tip: "Seçilmiş səhifələri bir sənəd kimi yığ (⏎)")
-    private lazy var bUnmark = tool("Ayır", "rectangle.stack.badge.minus", #selector(unmarkPages(_:)), tip: "Seçilmiş sənədi yenidən ayrı səhifələrə aç")
-    private lazy var bUnmarkAll = tool("Hamısını ayır", "square.grid.3x3", #selector(unmarkAll(_:)), tip: "Bütün sənəd işarələrini sil")
-    private lazy var bFinish = tool("İmtina et", "xmark", #selector(finishSplit(_:)), tip: "Parçalama ekranından çıx, əvvəlki görünüşə qayıt (işarələr yadda qalır)")
-    private lazy var bWrite = tool("Faylları yaz…", "square.and.arrow.down.on.square", #selector(writeFiles(_:)),
-                                          tip: "Hər sənədi ayrıca PDF kimi qovluğa yaz (⌘B)", prominent: true)
-    private lazy var bPrev = tool("", "chevron.left", #selector(previousPage(_:)), tip: "Əvvəlki səhifə")
-    private lazy var bNext = tool("", "chevron.right", #selector(nextPage(_:)), tip: "Növbəti səhifə")
-    private lazy var bFull = tool("", "rectangle.dashed", #selector(marginsFull(_:)), tip: "Bu səhifəyə toxunma: çərçivəni bütün səhifəyə aç")
-    private lazy var bCancel = tool("İmtina et", "xmark", #selector(cancelMargins(_:)), tip: "Heç nəyi dəyişmədən çıx (Esc)")
-    private lazy var bApplyOne = tool("Bu səhifəyə", "doc", #selector(marginsApplyOne(_:)), tip: "Yalnız bu səhifənin kənarlarını təmizlə")
-    private lazy var bApply = tool("Tətbiq et", "doc.on.doc", #selector(marginsApply(_:)),
-                                   tip: "Səhifələri seç və çərçivələri onlara tətbiq et", prominent: true)
-    private lazy var bBack = tool("Geri", "chevron.left", #selector(marginsBack(_:)), tip: "Çərçivələrə qayıt (Esc)")
-    /// "Tətbiq et": the first and last page to clean (1-based).
-    private lazy var firstField = pageField("İlk səhifə")
-    private lazy var lastField = pageField("Son səhifə")
+    /// "Highlight" and its style menu in one glass capsule, as in Preview: a segmented control whose first part
+    /// turns the tool on and off and whose second part opens the styles.
+    private lazy var highlightControl: NSSegmentedControl = {
+        let c = NSSegmentedControl(images: [Self.symbol(HighlightStyle.saved.symbol, L("Highlight")), Self.symbol("chevron.down", L("Highlight Style"))],
+                                   trackingMode: .selectAny, target: self, action: #selector(highlightClicked(_:)))
+        c.segmentStyle = .automatic
+        c.borderShape = .capsule
+        c.controlSize = .extraLarge
+        c.setToolTip(L("Highlight"), forSegment: 0)
+        c.setToolTip(L("Highlight Style"), forSegment: 1)
+        c.translatesAutoresizingMaskIntoConstraints = false
+        c.heightAnchor.constraint(equalToConstant: Self.buttonSize).isActive = true
+        return c
+    }()
+
+    /// A tool symbol, the size of the other tool buttons' symbols.
+    private static func symbol(_ name: String, _ label: String) -> NSImage {
+        let img = NSImage(systemSymbolName: name, accessibilityDescription: label)!
+        return img.withSymbolConfiguration(.init(pointSize: 16, weight: .medium)) ?? img
+    }
+    private lazy var bWhite = tool("", "eraser", #selector(beginWhiteout(_:)), tip: L("White Out"), toggle: true)
+    private lazy var bSplit = tool(L("Split into Documents"), "scissors", #selector(splitVolume(_:)), tip: L("Split into Documents"))
+    private lazy var bAuto = tool("", "wand.and.stars", #selector(marginsAuto(_:)), tip: L("Detect Automatically"))
+    private lazy var bMark = tool(L("Make Document"), "rectangle.stack.badge.plus", #selector(markDocument(_:)), tip: L("Make Document"))
+    private lazy var bUnmark = tool(L("Separate"), "rectangle.stack.badge.minus", #selector(unmarkPages(_:)), tip: L("Separate"))
+    private lazy var bUnmarkAll = tool(L("Separate All"), "square.grid.3x3", #selector(unmarkAll(_:)), tip: L("Separate All"))
+    private lazy var bFinish = tool(L("Cancel"), "xmark", #selector(finishSplit(_:)), tip: L("Cancel"))
+    private lazy var bWrite = tool(L("Write Files"), "square.and.arrow.down.on.square", #selector(writeFiles(_:)),
+                                          tip: L("Write Files"), prominent: true)
+    private lazy var bPrev = tool("", "chevron.left", #selector(previousPage(_:)), tip: L("Previous Page"))
+    private lazy var bNext = tool("", "chevron.right", #selector(nextPage(_:)), tip: L("Next Page"))
+    private lazy var bFull = tool("", "rectangle.dashed", #selector(marginsFull(_:)), tip: L("Whole Page"))
+    private lazy var bCancel = tool(L("Cancel"), "xmark", #selector(cancelMargins(_:)), tip: L("Cancel"))
+    private lazy var bApplyOne = tool(L("This Page"), "doc", #selector(marginsApplyOne(_:)), tip: L("This Page"))
+    private lazy var bApply = tool(L("Apply"), "doc.on.doc", #selector(marginsApply(_:)),
+                                   tip: L("Apply"), prominent: true)
+    private lazy var bBack = tool(L("Back"), "chevron.left", #selector(marginsBack(_:)), tip: L("Back"))
+    /// "Apply": the first and last page to clean (1-based).
+    private lazy var firstField = pageField(L("First Page"))
+    private lazy var lastField = pageField(L("Last Page"))
     private lazy var rangeBox: NSView = {
-        let label = NSTextField(labelWithString: "Səhifələr:")
+        let label = NSTextField(labelWithString: L("Pages:"))
         label.textColor = .secondaryLabelColor
         let dash = NSTextField(labelWithString: "–")
         let box = NSStackView(views: [label, firstField, dash, lastField])
@@ -446,9 +529,9 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     }
 
     private var squares: [ObjectIdentifier: NSLayoutConstraint] = [:]
-    private var pageTools: [NSButton] { [bAdd, bExtract, bDelete, bWhite, bText, bSign] }
+    private var pageTools: [NSView] { [bAdd, bExtract, bDelete, bWhite, bText, highlightControl, bSign] }
 
-    /// "Kənarları təmizlə" and "Sənədlərə parçala" show their names; only a window too narrow for them makes
+    /// "Clean Margins" and "Split into Documents" show their names; only a window too narrow for them makes
     /// them icons as well.
     private func fitStrip() {
         let named: [NSButton] = [bMargins, bSplit]
@@ -484,7 +567,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         sizeSlider.target = self
         sizeSlider.action = #selector(sizeChanged(_:))
         sizeSlider.controlSize = .small
-        sizeSlider.toolTip = "Səhifə şəkillərinin ölçüsü"
+        sizeSlider.toolTip = L("Thumbnail Size")
 
         for s in [leftStack, centerStack, rightStack] {
             s.spacing = 8                 // every button the same distance from the next
@@ -533,11 +616,11 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         return b
     }
 
-    /// Strip arrangements. "Ağart" keeps the page arrangement: the bar does not move, only its button shows "on".
+    /// Strip arrangements. "White Out" keeps the page arrangement: the bar does not move, only its button shows "on".
     private enum StripLayout { case page, margins, marginsApply, grid, split, text }
     private var stripLayout: StripLayout?
-    /// The usual tools sit in the middle; with "Kənarları təmizlə" open they slide to the left and its buttons fade in
-    /// on the right, next to the "Kənarları təmizlə" button, which always stays at the right end.
+    /// The usual tools sit in the middle; with "Clean Margins" open they slide to the left and its buttons fade in
+    /// on the right, next to the "Clean Margins" button, which always stays at the right end.
     /// Split mode has tools in the centre too: the side groups keep clear of them.
     private lazy var centerGaps: [NSLayoutConstraint] = [
         { let c = leftStack.trailingAnchor.constraint(lessThanOrEqualTo: centerStack.leadingAnchor, constant: -12); c.priority = .defaultLow; return c }(),
@@ -558,7 +641,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
                 left = pageTools
                 right = (layout == .grid ? [sizeBox] : []) + [bMargins, bSplit]
             case .margins:
-                // "Kənarları təmizlə" makes way for its own tools; leaving is "İmtina" (Esc)
+                // "Clean Margins" makes way for its own tools; leaving is "İmtina" (Esc)
                 left = pageTools
                 right = [group([bPrev, bNext]), group([bAuto, bFull]), bCancel, bApplyOne, bApply]
             case .marginsApply:
@@ -566,7 +649,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
                 left = [hint]
                 right = [bBack, rangeBox, bApply]
             case .text:
-                // "Mətn": the font, size, colour and bold / italic of the text boxes
+                // "Text": the font, size, colour and bold / italic of the text boxes
                 left = pageTools
                 right = [fontPopup, sizePopup, colorWell, group([bBold, bItalic])]
             case .split:
@@ -595,18 +678,19 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         }
         bMargins.state = mode == .margins ? .on : .off
         bWhite.state = mode == .whiteout ? .on : .off
+        highlightControl.setSelected(mode == .highlight, forSegment: 0)
+        highlightControl.setSelected(false, forSegment: 1)
+        highlightControl.isEnabled = can(#selector(beginHighlight(_:)))
+        showHighlightStyle()
         bText.state = mode == .text ? .on : .off
         bSign.state = inspectorItem.isCollapsed ? .off : .on
         switch mode {
-        case .split: hint.stringValue = "Başlanğıca klik → Shift ilə sona klik → ⏎ · İki klik: sənədi aç / yığ"
+        case .split: hint.stringValue = L("Click the start → Shift-click the end → ⏎ · Double-click: open / close a document")
         case .margins:
             hint.stringValue = ""
-        case .marginsApply: hint.stringValue = "İşarəsi götürülən səhifələrə toxunulmayacaq"
+        case .marginsApply: hint.stringValue = L("Unticked pages are left as they are")
         default: hint.stringValue = ""
         }
-        let scans = hasScans
-        bMargins.toolTip = scans ? "Deşik izlərini və kənar ləkələri sil (⌘K)" : "Yalnız skan edilmiş səhifələrdə işləyir: bu sənəddə skan yoxdur"
-        bWhite.toolTip = scans ? "Ağart: lazımsız hissələri əl ilə sil (⌥⌘W)" : "Ağart yalnız skan edilmiş səhifələrdə işləyir: bu sənəddə skan yoxdur"
         for b in [bAdd, bExtract, bDelete, bMargins, bWhite, bSplit, bMark, bUnmark, bUnmarkAll, bFinish, bWrite,
                   bPrev, bNext, bAuto, bFull, bCancel, bApplyOne, bApply, bBack, bText, bSign] {
             b.target = self
@@ -618,27 +702,44 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     /// "+": a small menu — pages of another PDF, or a blank page.
     @objc func showAddMenu(_ sender: NSButton) {
         let m = NSMenu()
-        let file = m.addItem(withTitle: "Fayl əlavə et…", action: #selector(appendFile(_:)), keyEquivalent: "")
+        let file = m.addItem(withTitle: L("Add File"), action: #selector(appendFile(_:)), keyEquivalent: "")
         file.image = NSImage(systemSymbolName: "doc.badge.plus", accessibilityDescription: nil)
-        let blank = m.addItem(withTitle: "Boş səhifə əlavə et", action: #selector(insertBlankPage(_:)), keyEquivalent: "")
+        let blank = m.addItem(withTitle: L("Add Blank Page"), action: #selector(insertBlankPage(_:)), keyEquivalent: "")
         blank.image = NSImage(systemSymbolName: "doc", accessibilityDescription: nil)
         m.items.forEach { $0.target = self }
         m.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
     }
 
+    /// Right-click in the left panel: the selected pages.
+    private func sideMenu() -> NSMenu {
+        let m = NSMenu()
+        func add(_ t: String, _ symbol: String, _ a: Selector) {
+            let item = m.addItem(withTitle: t, action: a, keyEquivalent: "")
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+            item.keepImageVisible()
+            item.target = self
+        }
+        add(L("Rotate Left"), "rotate.left", #selector(rotateLeft(_:)))
+        add(L("Rotate Right"), "rotate.right", #selector(rotateRight(_:)))
+        m.addItem(.separator())
+        add(L("Export"), "arrow.up.doc", #selector(extractPages(_:)))
+        add(L("Delete"), "trash", #selector(deletePages(_:)))
+        return m
+    }
+
     private func gridMenu() -> NSMenu {
         let m = NSMenu()
         func add(_ t: String, _ a: Selector) { m.addItem(withTitle: t, action: a, keyEquivalent: "") }
-        add("Sənəd et", #selector(markDocument(_:)))
-        add("Ayır", #selector(unmarkPages(_:)))
+        add(L("Make Document"), #selector(markDocument(_:)))
+        add(L("Separate"), #selector(unmarkPages(_:)))
         m.addItem(.separator())
-        add("Aç", #selector(openSelectedPage(_:)))
-        add("Sola döndər", #selector(rotateLeft(_:)))
-        add("Sağa döndər", #selector(rotateRight(_:)))
-        add("Çıxar…", #selector(extractPages(_:)))
-        add("Boş səhifə əlavə et", #selector(insertBlankPage(_:)))
+        add(L("Open"), #selector(openSelectedPage(_:)))
+        add(L("Rotate Left"), #selector(rotateLeft(_:)))
+        add(L("Rotate Right"), #selector(rotateRight(_:)))
+        add(L("Export"), #selector(extractPages(_:)))
+        add(L("Add Blank Page"), #selector(insertBlankPage(_:)))
         m.addItem(.separator())
-        add("Sil", #selector(deletePages(_:)))
+        add(L("Delete"), #selector(deletePages(_:)))
         m.autoenablesItems = true
         return m
     }
@@ -725,7 +826,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     private func showZoomMenu() {
         guard !inGrid else { return }
         let m = NSMenu()
-        for t in ["Səhifəni sığdır", "Eninə sığdır"] { m.addItem(withTitle: t, action: #selector(zoomPicked(_:)), keyEquivalent: "") }
+        for t in [L("Fit Page"), L("Fit Width")] { m.addItem(withTitle: t, action: #selector(zoomPicked(_:)), keyEquivalent: "") }
         m.addItem(.separator())
         let now = Int((pdfView.scaleFactor * 100).rounded())
         for s in Self.zoomSteps {
@@ -738,9 +839,9 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
 
     @objc func zoomPicked(_ sender: NSMenuItem) {
         let t = sender.title
-        if t == "Səhifəni sığdır" { fitPage(nil) }
-        else if t == "Eninə sığdır" { pdfView.autoScales = true }
-        else if let v = Int(t.dropLast()) { pdfView.autoScales = false; pdfView.scaleFactor = CGFloat(v) / 100 }
+        if t == L("Fit Page") { fitPage(nil) }
+        else if t == L("Fit Width") { fitWidth(nil) }
+        else if let v = Int(t.dropLast()) { setScale(CGFloat(v) / 100) }
         updateZoomLabel()
     }
 
@@ -749,57 +850,58 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         case .sidebarTrackingSeparator:
             return NSTrackingSeparatorToolbarItem(identifier: id, splitView: splitVC.splitView, dividerIndex: 0)
         case .sidebar:
-            return barItem("sidebar", "Panel", "sidebar.left", #selector(toggleSidebarPanel(_:)), tip: "Sol paneli göstər / gizlət (⌥⌘S)")
+            return barItem("sidebar", L("Show Sidebar"), "sidebar.left", #selector(toggleSidebarPanel(_:)), tip: L("Show Sidebar"))
         case .rotate:
-            let g = segments(id, "Döndər", ["rotate.left", "rotate.right"], ["Sola döndər", "Sağa döndər"],
-                             ["Sola döndər (⌘L)", "Sağa döndər (⌘R)"], #selector(rotateClicked(_:)))
+            let g = segments(id, L("Rotate"), ["rotate.left", "rotate.right"], [L("Rotate Left"), L("Rotate Right")],
+                             [L("Rotate Left"), L("Rotate Right")], #selector(rotateClicked(_:)))
             rotateGroup = g
             return g
         case .tools:
             let g = NSToolbarItemGroup(itemIdentifier: id,
-                                       images: [NSImage(systemSymbolName: "pencil.tip.crop.circle", accessibilityDescription: "Alətlər")!],
-                                       selectionMode: .selectAny, labels: ["Alətlər"], target: self, action: #selector(toolsClicked(_:)))
-            g.label = "Alətlər"
-            g.toolTip = "Alətlər barını göstər / gizlət"
+                                       images: [NSImage(systemSymbolName: "pencil.tip.crop.circle", accessibilityDescription: L("Tool Bar"))!],
+                                       selectionMode: .selectAny, labels: [L("Tool Bar")], target: self, action: #selector(toolsClicked(_:)))
+            g.label = L("Tool Bar")
+            g.toolTip = L("Tool Bar")
+            g.subitems.first?.toolTip = L("Tool Bar")
             toolsGroup = g
             updateStripVisibility()
             return g
         case .share:
-            let i = NSSharingServicePickerToolbarItem(itemIdentifier: id)
-            i.label = "Paylaş"
-            i.toolTip = "Paylaş"
-            i.delegate = self
-            return i
+            // "Çap et" and "Paylaş" in one capsule, like the other groups
+            let g = segments(id, L("Print / Share"), ["printer", "square.and.arrow.up"], [L("Print"), L("Share")],
+                             [L("Print"), L("Share")], #selector(printShareClicked(_:)))
+            shareGroup = g
+            return g
         case .history:
-            let g = segments(id, "Geri al / Təkrarla", ["arrow.uturn.backward", "arrow.uturn.forward"], ["Geri al", "Təkrarla"],
-                             ["Son əməliyyatı geri qaytar (⌘Z)", "Geri qaytarılanı təkrarla (⇧⌘Z)"], #selector(historyClicked(_:)))
+            let g = segments(id, L("Undo / Redo"), ["arrow.uturn.backward", "arrow.uturn.forward"], [L("Undo"), L("Redo")],
+                             [L("Undo"), L("Redo")], #selector(historyClicked(_:)))
             historyGroup = g
             return g
         case .mode:
             let g = NSToolbarItemGroup(itemIdentifier: id,
-                                       images: [NSImage(systemSymbolName: "doc.text", accessibilityDescription: "Səhifə")!,
-                                                NSImage(systemSymbolName: "square.grid.3x3", accessibilityDescription: "Səhifələr")!],
-                                       selectionMode: .selectOne, labels: ["Səhifə", "Səhifələr"],
+                                       images: [NSImage(systemSymbolName: "doc.text", accessibilityDescription: L("Page View"))!,
+                                                NSImage(systemSymbolName: "square.grid.3x3", accessibilityDescription: L("Grid View"))!],
+                                       selectionMode: .selectOne, labels: [L("Page View"), L("Grid View")],
                                        target: self, action: #selector(modeClicked(_:)))
-            g.label = "Görünüş"
-            g.toolTip = "Səhifə (⌘1) / Bütün səhifələr (⌘2)"
+            g.label = L("View")
+            for (i, t) in [L("Page View"), L("Grid View")].enumerated() where i < g.subitems.count { g.subitems[i].toolTip = t }
             g.controlRepresentation = .expanded
             g.selectedIndex = inGrid ? 1 : 0
             modeGroup = g
             return g
         case .zoom:
             // the middle part shows the scale ("112%"); a click on it opens the list of scales
-            let g = segments(id, "Miqyas", ["minus.magnifyingglass", "magnifyingglass", "plus.magnifyingglass"], ["Kiçilt", "Miqyas", "Böyüt"],
-                             ["Kiçilt (⌘−)", "Miqyas: seçimlər", "Böyüt (⌘+)"], #selector(zoomClicked(_:)))
+            let g = segments(id, L("Scale"), ["minus.magnifyingglass", "magnifyingglass", "plus.magnifyingglass"], [L("Zoom Out"), L("Scale"), L("Zoom In")],
+                             [L("Zoom Out"), L("Scale"), L("Zoom In")], #selector(zoomClicked(_:)))
             g.subitems[1].image = nil
             zoomGroup = g
             updateZoomLabel()
             return g
         case .search:
             let i = NSSearchToolbarItem(itemIdentifier: id)
-            i.label = "Axtar"
-            i.toolTip = "Mətndə axtar (⌘F)"
-            i.searchField.placeholderString = "Axtar"
+            i.label = L("Search Text")
+            i.toolTip = L("Search Text")
+            i.searchField.placeholderString = L("Search")
             i.searchField.sendsWholeSearchString = true
             i.searchField.target = self
             i.searchField.action = #selector(searchAction(_:))
@@ -810,11 +912,39 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         }
     }
 
-    /// "Paylaş": the document's file (saved first, so the shared copy has every change).
-    func items(for pickerToolbarItem: NSSharingServicePickerToolbarItem) -> [Any] {
+    /// "Share": the document's file (saved first, so the shared copy has every change).
+    private func shareItems() -> [Any] {
         guard let d = pdfDoc, let url = d.fileURL else { return [] }
         if d.isDocumentEdited { d.save(to: url, ofType: d.fileType ?? "com.adobe.pdf", for: .saveOperation) { _ in } }
         return [url]
+    }
+
+    private var shareGroup: NSToolbarItemGroup?
+
+    /// "Çap et" prints the document; "Paylaş" opens the system share menu under its button.
+    @objc func printShareClicked(_ sender: NSToolbarItemGroup) {
+        if sender.selectedIndex == 0 { pdfDoc?.printDocument(sender); return }
+        let items = shareItems()
+        guard !items.isEmpty, let frame = window?.contentView?.superview else { return }
+        let picker = NSSharingServicePicker(items: items)
+        // the toolbar draws the group as a segmented control: point at its "Paylaş" half (or, failing that, the mouse)
+        if let control = Self.segmentedControl(in: frame, labelled: L("Share")) {
+            let half = control.bounds.width / 2
+            picker.show(relativeTo: NSRect(x: half, y: 0, width: half, height: control.bounds.height), of: control, preferredEdge: .minY)
+        } else {
+            let p = frame.convert(window!.mouseLocationOutsideOfEventStream, from: nil)
+            picker.show(relativeTo: NSRect(x: p.x - 1, y: p.y - 1, width: 2, height: 2), of: frame, preferredEdge: .minY)
+        }
+    }
+
+    /// The toolbar's segmented control that has a part with this label.
+    private static func segmentedControl(in v: NSView, labelled label: String) -> NSSegmentedControl? {
+        if let c = v as? NSSegmentedControl,
+           (0..<c.segmentCount).contains(where: { c.label(forSegment: $0) == label || c.image(forSegment: $0)?.accessibilityDescription == label || c.toolTip(forSegment: $0) == label }) {
+            return c
+        }
+        for s in v.subviews { if let c = segmentedControl(in: s, labelled: label) { return c } }
+        return nil
     }
 
     /// "Alətlər": show or hide the tool bar (it stays while a tool that needs it is open).
@@ -826,7 +956,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     /// The tool bar shows when the user wants it, and always for the tools that work from it.
     private func updateStripVisibility() {
         guard stripBar != nil else { return }
-        let needed: Set<Mode> = [.split, .margins, .marginsApply, .text, .whiteout]
+        let needed: Set<Mode> = [.split, .margins, .marginsApply, .text, .whiteout, .highlight]
         let show = toolsWanted || needed.contains(mode)
         if stripBar.isHidden == show {
             NSAnimationContext.runAnimationGroup { ctx in
@@ -855,7 +985,10 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         if old == .marginsApply { grid.stopChoosing() }
         if old == .text { textOverlay.finishEditing(); textOverlay.isHidden = true }
         selectionOverlay.selected = nil
-        if [.grid, .split, .marginsApply].contains(m), !inspectorItem.isCollapsed { inspectorItem.animator().isCollapsed = true }
+        // the signature panel closes in the grid, and for the other tools (one tool at a time)
+        if [.grid, .split, .marginsApply, .margins, .whiteout, .text, .highlight].contains(m), !inspectorItem.isCollapsed {
+            inspectorItem.animator().isCollapsed = true
+        }
         mode = m
         pdfView.isHidden = inGrid
         grid.scroll.isHidden = !inGrid
@@ -874,13 +1007,14 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
             }
             window?.makeFirstResponder(grid.collection)
         } else {
-            let wasPageView = old == .page || old == .margins || old == .whiteout || old == .text
+            let wasPageView = old == .page || old == .margins || old == .whiteout || old == .text || old == .highlight
             if old == .marginsApply {
                 if let p = pdfDoc?.pdf.page(at: applyReturnPage) { pdfView.go(to: p) }
             } else if !wasPageView, let p = pdfDoc?.pdf.page(at: current) { pdfView.go(to: p) }
             window?.makeFirstResponder(pdfView)
             if m == .margins { if old == .marginsApply { overlay.isHidden = false } else { startMargins() } }
             if m == .whiteout { startWhiteout() }
+            if m == .highlight { markSelection() }       // text selected before the tool was turned on
             if m == .text { startText() }
         }
         updateToolbar()
@@ -901,10 +1035,9 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     /// A panel closed or opened by dragging its edge is remembered, so the panel button then works with one click.
     @objc private func sidebarResized() {
         if sidebarReady && !inGrid && !sidebarAnimating { sidebarWanted = !sidebarItem.isCollapsed }
-        let w = sidebar.bounds.width
-        guard w > 60 else { return }
-        let tw = (w - 48).rounded()
-        if thumbs.thumbnailSize.width != tw { thumbs.thumbnailSize = NSSize(width: tw, height: (tw * 1.33).rounded()) }
+        guard sidebar.bounds.width > 60 else { return }
+        side.resized()
+        refit()
     }
 
     /// The panel shows with a single page (also while cleaning margins or whitening); it leaves no trace when hidden.
@@ -929,24 +1062,38 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         return i == NSNotFound ? 0 : i
     }
 
-    /// Pages an action works on: the selection in the grid, the current page otherwise.
+    /// Pages an action works on: the selection in the grid, or in the left panel when it shows; the page on
+    /// screen otherwise.
     private var targetPages: [Int] {
         guard (pdfDoc?.pdf.pageCount ?? 0) > 0 else { return [] }
-        return inGrid ? grid.selected : [currentPageIndex]
+        if inGrid { return grid.selected }
+        if !sidebarItem.isCollapsed, !side.selected.isEmpty { return side.selected }
+        return [currentPageIndex]
     }
 
     /// Where the page view was before the pages changed; put back afterwards (undo re-inserts every page,
     /// which would otherwise leave the view at the last page).
     private var spotBeforeChange: (Int, CGPoint, Int)?
 
-    @objc func docWillChange() { if !inGrid && spotBeforeChange == nil { spotBeforeChange = viewSpot() } }
+    /// The pages selected in the left panel before the pages changed: selected again afterwards, where they still are.
+    private var sideBeforeChange: [PDFPage]?
+
+    @objc func docWillChange() {
+        if !inGrid && spotBeforeChange == nil { spotBeforeChange = viewSpot() }
+        if sideBeforeChange == nil { sideBeforeChange = side.selected.compactMap { pdfDoc?.pdf.page(at: $0) } }
+    }
 
     @objc func docChanged() {
         if inGrid { grid.reload() }
         pdfView.layoutDocumentView()
-        refreshTurnedThumbnails()
         if !inGrid, let spot = spotBeforeChange { restore(spot) }
         spotBeforeChange = nil
+        if let d = pdfDoc?.pdf {
+            let keep = (sideBeforeChange ?? side.selected.compactMap { d.page(at: $0) })
+                .map { d.index(for: $0) }.filter { $0 != NSNotFound }
+            side.reload(select: keep.isEmpty ? [currentPageIndex] : keep)
+        }
+        sideBeforeChange = nil
         overlay.needsDisplay = true
         whiteOverlay.needsDisplay = true
         updatePageLabel()
@@ -957,6 +1104,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
 
     @objc func pageChanged() {
         pdfView.sharpenAnnotations()
+        if !inGrid { side.follow(currentPageIndex) }
         updatePageLabel()
         if !inGrid { updateStrip() }
         overlay.needsDisplay = true
@@ -972,6 +1120,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     }
 
     @objc func scaleChanged() {
+        if !settingScale { fit = nil }        // pinched or set by PDFKit: no longer fitting
         updateZoomLabel()
         overlay.needsDisplay = true; whiteOverlay.needsDisplay = true
         DispatchQueue.main.async { self.pdfView.sharpenAnnotations() }
@@ -987,44 +1136,34 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         DispatchQueue.main.async { self.pdfView.sharpenAnnotations() }   // a new annotation gets a new layer
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self.pdfView.sharpenAnnotations() }
         grid.invalidate([page])
+        side.redraw([page])
         if let s = selectionOverlay.selected, !s.page.annotations.contains(where: { $0 === s.a }) { selectionOverlay.selected = nil }
         selectionOverlay.needsDisplay = true
     }
 
+    /// The bubble in the bottom-right corner (the title has no subtitle):
+    /// - page view: "3 / 120";
+    /// - grid: "120", one page selected "3 / 120", several "✓ 5 / 120";
+    /// - Sənədlərə parçala: "❐ 12 · 📄 5" (documents, pages not in a document; ✓ when every page is in one);
+    /// - Tətbiq et: "✓ 80 / 120" (pages to clean).
     func updatePageLabel() {
+        window?.subtitle = ""
         let n = pdfDoc?.pdf.pageCount ?? 0
-        let g = pdfDoc?.orderedGroups().count ?? 0
+        guard n > 0 else { bubble.show([]); return }
         switch mode {
+        case .page, .margins, .whiteout, .text, .highlight:
+            bubble.show([(nil, "\(currentPageIndex + 1) / \(n)")])
         case .grid:
-            let s = grid.selected.count
-            window?.subtitle = "\(n) səhifə" + (s > 0 ? " · seçilib \(s)" : "")
+            let s = grid.selected
+            bubble.show(s.count == 0 ? [(nil, "\(n)")]
+                        : s.count == 1 ? [(nil, "\(s[0] + 1) / \(n)")]
+                        : [("checkmark.circle.fill", "\(s.count) / \(n)")])
         case .split:
-            let loose = n - (pdfDoc?.orderedGroups().reduce(0) { $0 + $1.count } ?? 0)
-            window?.subtitle = "\(g) sənəd" + (loose > 0 ? " · işarəsiz \(loose) səhifə" : " · hamısı işarələnib")
-        case .page, .margins, .whiteout, .text:
-            window?.subtitle = n > 0 ? "Səhifə \(currentPageIndex + 1) / \(n)" : ""
+            let groups = pdfDoc?.orderedGroups() ?? []
+            let loose = n - groups.reduce(0) { $0 + $1.count }
+            bubble.show([("doc.on.doc", "\(groups.count)"), loose > 0 ? ("doc", "\(loose)") : ("checkmark", "")])
         case .marginsApply:
-            window?.subtitle = "\(grid.chosen.count) / \(n) səhifə təmizlənəcək"
-        }
-    }
-
-    // MARK: thumbnails of turned pages
-
-    /// Each page's rotation as the left panel last drew it.
-    private var shownRotation: [ObjectIdentifier: Int] = [:]
-
-    private func noteRotations() {
-        shownRotation = [:]
-        for p in pdfDoc?.pages ?? [] { shownRotation[ObjectIdentifier(p)] = p.rotation }
-    }
-
-    /// The left panel does not notice a page being turned (by the buttons, or by undo / redo): tell it about each
-    /// turned page the way PDFKit tells it about changed annotations, and it draws that page again.
-    private func refreshTurnedThumbnails() {
-        for p in pdfDoc?.pages ?? [] {
-            let key = ObjectIdentifier(p)
-            if let was = shownRotation[key], was != p.rotation { pdfView.annotationsChanged(on: p) }
-            shownRotation[key] = p.rotation
+            bubble.show([("checkmark.circle.fill", "\(grid.chosen.count) / \(n)")])
         }
     }
 
@@ -1049,9 +1188,41 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         let tens = up ? (now / 10).rounded(.down) + 1 : (now / 10).rounded(.up) - 1
         let lowest = max(10, pdfView.minScaleFactor * 100), highest = min(1000, pdfView.maxScaleFactor * 100)
         let target = min(max(tens * 10, lowest), highest)
-        pdfView.autoScales = false
-        pdfView.scaleFactor = target / 100
+        setScale(target / 100)
     }
+
+    /// How the page view keeps fitting when the window or the panels change size ("Səhifəni sığdır",
+    /// "Eninə sığdır"); nil once the scale is set by hand.
+    private enum Fit { case page, width }
+    private var fit: Fit?
+    /// On while the scale is set here, so `scaleChanged` can tell it from a pinch.
+    private var settingScale = false
+
+    private func setScale(_ s: CGFloat, fit f: Fit? = nil) {
+        settingScale = true
+        pdfView.autoScales = false
+        pdfView.scaleFactor = s
+        settingScale = false
+        fit = f
+    }
+
+    /// The view changed size: fit again as asked last (after the layout has settled).
+    private func refit() {
+        guard fit != nil, !inGrid else { return }
+        refitPending?.cancel()
+        let job = DispatchWorkItem { [weak self] in
+            guard let self, !self.inGrid else { return }
+            switch self.fit {
+            case .page: self.fitPage(nil)
+            case .width: self.fitWidth(nil)
+            case nil: break
+            }
+        }
+        refitPending = job
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: job)
+    }
+    private var refitPending: DispatchWorkItem?
+    @objc private func pageViewResized() { refit() }
 
     @objc func zoomToFit(_ sender: Any?) {
         if inGrid { grid.itemWidth = 170; sizeSlider.doubleValue = 170 } else { fitPage(nil) }
@@ -1067,10 +1238,30 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         let free = visiblePageArea()
         let gap = pdfView.pageBreakMargins.top + pdfView.pageBreakMargins.bottom   // between two pages, page points
         guard size.width > 0, size.height > 0, free.width > 0, free.height > 0 else { return }
-        pdfView.autoScales = false
-        pdfView.scaleFactor = min(free.width / (size.width + 2 * gap), free.height / (size.height + 2 * gap))
+        setScale(min(free.width / (size.width + 2 * gap), free.height / (size.height + 2 * gap)), fit: .page)
         pdfView.layoutDocumentView()
         centre(p)
+        updateZoomLabel()
+    }
+
+    /// "Eninə sığdır": the page fills the width the bars and panels leave free (with the usual gap at its sides);
+    /// the view stays where it was on the page.
+    @objc func fitWidth(_ sender: Any?) {
+        guard let p = pdfView.currentPage ?? pdfDoc?.pdf.page(at: 0) else { return }
+        var size = p.bounds(for: pdfView.displayBox).size
+        if p.rotation % 180 != 0 { size = CGSize(width: size.height, height: size.width) }
+        var free = visiblePageArea().width
+        if let sv = pdfView.documentView?.enclosingScrollView, sv.scrollerStyle == .legacy, sv.hasVerticalScroller {
+            free -= NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
+        }
+        let across: CGFloat = pdfView.displayMode == .twoUp || pdfView.displayMode == .twoUpContinuous ? 2 : 1
+        let side = pdfView.pageBreakMargins.left + pdfView.pageBreakMargins.right
+        guard size.width > 0, free > 0 else { return }
+        let spot = pdfView.currentDestination
+        setScale(free / (across * (size.width + side)) * 0.998, fit: .width)
+        pdfView.layoutDocumentView()
+        if let spot, spot.page != nil { pdfView.go(to: spot) }
+        centre(p, vertically: false)
         updateZoomLabel()
     }
 
@@ -1083,15 +1274,17 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
                       width: b.width - insets.left - insets.right, height: b.height - insets.top - insets.bottom)
     }
 
-    /// Scroll so the page's middle is in the middle of the free part of the view.
-    private func centre(_ p: PDFPage) {
+    /// Scroll so the page's middle is in the middle of the free part of the view (across always; up and down
+    /// unless `vertically` is false).
+    private func centre(_ p: PDFPage, vertically: Bool = true) {
         guard let clip = pdfView.documentView?.enclosingScrollView?.contentView, let sv = clip.enclosingScrollView else { return }
         let page = clip.convert(pdfView.convert(p.bounds(for: pdfView.displayBox), from: p), from: pdfView)
         let free = clip.convert(visiblePageArea(), from: pdfView)
-        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: clip.bounds.origin.y + (page.midY - free.midY)))
+        let dx = clip.documentRect.width > clip.bounds.width + 1 ? page.midX - free.midX : 0
+        clip.scroll(to: NSPoint(x: clip.bounds.origin.x + dx, y: clip.bounds.origin.y + (vertically ? page.midY - free.midY : 0)))
         sv.reflectScrolledClipView(clip)
     }
-    @objc func actualSize(_ sender: Any?) { setMode(.page); pdfView.autoScales = false; pdfView.scaleFactor = 1 }
+    @objc func actualSize(_ sender: Any?) { setMode(.page); setScale(1) }
     @objc func singlePage(_ sender: Any?) { setMode(.page); pdfView.displayMode = .singlePageContinuous }
     @objc func twoPages(_ sender: Any?) { setMode(.page); pdfView.displayMode = .twoUpContinuous }
 
@@ -1109,11 +1302,11 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     @objc func goToPage(_ sender: Any?) {
         guard let w = window, let n = pdfDoc?.pdf.pageCount, n > 0 else { return }
         let a = NSAlert()
-        a.messageText = "Səhifəyə keç"
-        a.informativeText = "Səhifə nömrəsi (1–\(n)):"
+        a.messageText = L("Go to Page")
+        a.informativeText = L("Page number (1–%d):", n)
         let f = NSTextField(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
         a.accessoryView = f
-        a.addButton(withTitle: "Keç"); a.addButton(withTitle: "Ləğv et")
+        a.addButton(withTitle: L("Go")); a.addButton(withTitle: L("Cancel"))
         a.window.initialFirstResponder = f
         a.beginSheetModal(for: w) { r in
             if r == .alertFirstButtonReturn, let k = Int(f.stringValue.trimmingCharacters(in: .whitespaces)) { self.go(k - 1) }
@@ -1158,17 +1351,9 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
 
     @objc func deletePages(_ sender: Any?) {
         let idx = targetPages
-        guard let d = pdfDoc, let w = window, !idx.isEmpty, can(#selector(deletePages(_:))) else { return }
-        let a = NSAlert()
-        a.messageText = idx.count == 1 ? "Səhifə \(idx[0] + 1) silinsin?" : "\(idx.count) səhifə silinsin?"
-        a.informativeText = "Geri qaytarmaq üçün ⌘Z basın."
-        a.addButton(withTitle: "Sil"); a.addButton(withTitle: "Ləğv et")
-        a.buttons[0].hasDestructiveAction = true
-        a.beginSheetModal(for: w) { r in
-            guard r == .alertFirstButtonReturn else { return }
-            d.delete(idx)
-            if self.inGrid { self.grid.select([min(idx[0], d.pdf.pageCount - 1)]) }
-        }
+        guard let d = pdfDoc, !idx.isEmpty, can(#selector(deletePages(_:))) else { return }
+        d.delete(idx)      // no question: ⌘Z brings the pages back
+        if inGrid { grid.select([min(idx[0], d.pdf.pageCount - 1)]) }
     }
 
     @objc func insertBlankPage(_ sender: Any?) {
@@ -1183,8 +1368,8 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         let p = NSOpenPanel()
         p.allowedContentTypes = [.pdf]
         p.allowsMultipleSelection = true
-        p.message = "Əlavə ediləcək PDF fayllarını seçin"
-        p.prompt = "Əlavə et"
+        p.message = L("Choose the PDF files to add")
+        p.prompt = L("Add")
         p.beginSheetModal(for: w) { r in
             guard r == .OK else { return }
             let urls = p.urls.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
@@ -1206,11 +1391,11 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         let p = NSSavePanel()
         p.allowedContentTypes = [.pdf]
         p.canCreateDirectories = true
-        p.nameFieldStringValue = "\(base) səhifə \(rangeText(idx)).pdf"
+        p.nameFieldStringValue = L("%@ page %@.pdf", base, rangeText(idx))
         if let dir = UserDefaults.standard.url(forKey: "extractFolder") { p.directoryURL = dir }
 
-        let one = NSButton(radioButtonWithTitle: "Hamısı bir faylda", target: nil, action: nil)
-        let each = NSButton(radioButtonWithTitle: "Hər səhifə ayrı faylda", target: nil, action: nil)
+        let one = NSButton(radioButtonWithTitle: L("All in one file"), target: nil, action: nil)
+        let each = NSButton(radioButtonWithTitle: L("Each page in its own file"), target: nil, action: nil)
         one.state = .on
         let box = NSStackView(views: [one, each])
         box.orientation = .vertical; box.alignment = .leading
@@ -1233,7 +1418,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
             } else {
                 ok = makePDF(pages).write(to: url)
             }
-            if !ok { self.alert("Fayl yazıla bilmədi.", "Qovluğa yazmaq icazəsini yoxlayın.") }
+            if !ok { self.alert(L("The file could not be written."), L("Check that the folder can be written to.")) }
         }
     }
 
@@ -1246,7 +1431,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
 
     // MARK: split (Böl)
 
-    /// "Sənədlərə parçala" (page view or grid): enter split mode; in split mode ⌘B writes the files.
+    /// "Split into Documents" (page view or grid): enter split mode; in split mode ⌘B writes the files.
     @objc func splitVolume(_ sender: Any?) {
         switch mode {
         case .split: writeFiles(sender)
@@ -1256,10 +1441,10 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         }
     }
 
-    /// The view "Sənədlərə parçala" was started from, and the page shown there.
+    /// The view "Split into Documents" was started from, and the page shown there.
     private var splitReturn: (mode: Mode, page: Int?) = (.grid, nil)
 
-    /// "İmtina et": back to that view (the marks stay).
+    /// "Cancel": back to that view (the marks stay).
     @objc func finishSplit(_ sender: Any?) {
         let back = splitReturn
         setMode(back.mode)
@@ -1289,9 +1474,9 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     @objc func unmarkAll(_ sender: Any?) {
         guard let d = pdfDoc, let w = window, !d.orderedGroups().isEmpty else { return }
         let a = NSAlert()
-        a.messageText = "Bütün sənəd işarələri silinsin?"
-        a.informativeText = "Səhifələrin özünə toxunulmur."
-        a.addButton(withTitle: "Sil"); a.addButton(withTitle: "Ləğv et")
+        a.messageText = L("Remove all document marks?")
+        a.informativeText = L("The pages themselves are not changed.")
+        a.addButton(withTitle: L("Delete")); a.addButton(withTitle: "Ləğv et")
         a.beginSheetModal(for: w) { r in
             guard r == .alertFirstButtonReturn else { return }
             d.unmarkAll(); self.grid.reload(); self.selectionChanged()
@@ -1302,8 +1487,8 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         guard mode == .split, let w = window, let d = pdfDoc else { return }
         let groups = d.orderedGroups()
         if groups.isEmpty {
-            alert("Hələ sənəd işarələnməyib.",
-                  "Sənədin birinci səhifəsinə klik edin, Shift ilə sonuncu səhifəsinə klik edin və ⏎ (və ya “Sənəd et”) basın. Hər sənəd üçün təkrarlayın.")
+            alert(L("No documents are marked yet."),
+                  L("Click the first page of a document, Shift-click its last page and press ⏎ (or “Make Document”). Repeat for each document."))
             return
         }
         let inGroup = Set(groups.flatMap { $0 })
@@ -1312,10 +1497,10 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
             if skipped == 0 { d.forgetStoredMarks() }   // every document written: nothing left to recover
             let a = NSAlert()
             a.messageText = skipped > 0
-                ? "\(written.count) fayl yaradıldı, \(skipped) fayl yazılmadı (dayandırıldı)"
-                : "\(written.count) fayl yaradıldı"
+                ? L("Files created: %d, not written: %d (stopped)", written.count, skipped)
+                : L("Files created: %d", written.count)
             a.informativeText = written.isEmpty ? "" : written.count == 1 ? written[0] : "\(written.first!) … \(written.last!)"
-            a.addButton(withTitle: "Finder-də göstər"); a.addButton(withTitle: "Bağla")
+            a.addButton(withTitle: L("Show in Finder")); a.addButton(withTitle: L("Close"))
             a.beginSheetModal(for: w) { r in
                 if r == .alertFirstButtonReturn {
                     NSWorkspace.shared.activateFileViewerSelecting(written.map { dir.appendingPathComponent($0) })
@@ -1378,7 +1563,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         overlay.isHidden = true
     }
 
-    /// "Avtomatik tap": find the frame of the page on screen again (undoes hand edits of that page only).
+    /// "Detect Automatically": find the frame of the page on screen again (undoes hand edits of that page only).
     @objc func marginsAuto(_ sender: Any?) {
         guard let p = pdfView.currentPage else { return }
         frames[ObjectIdentifier(p)] = Margins.detect(p)
@@ -1410,7 +1595,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         overlay.needsDisplay = true
     }
 
-    /// "Tətbiq et", first press: the frame tools give way to "first – last" (1 – N) and the grid shows every page
+    /// "Apply", first press: the frame tools give way to "first – last" (1 – N) and the grid shows every page
     /// with a checkbox, all ticked. Second press: the ticked pages are cleaned. Changing the numbers ticks just
     /// the pages in between; any page can still be ticked or unticked by hand. Pages that are not scans are faded.
     @objc func marginsApply(_ sender: Any?) {
@@ -1432,10 +1617,10 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         if let p = d.pdf.page(at: at) { pdfView.go(to: p) }
     }
 
-    /// "Geri" (or Esc) while choosing pages: back to the frames, nothing cleaned.
+    /// "Back" (or Esc) while choosing pages: back to the frames, nothing cleaned.
     @objc func marginsBack(_ sender: Any?) { if mode == .marginsApply { setMode(.margins) } }
 
-    /// The page shown before "Tətbiq et", to come back to.
+    /// The page shown before "Apply", to come back to.
     private var applyReturnPage = 0
 
     /// A valid "first – last" ticks exactly the pages in between.
@@ -1487,12 +1672,94 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         textOverlay.styleChanged(s)
     }
 
+    // MARK: highlight (Vurgula)
+
+    /// The button toggles the tool; turned on with text selected, it marks that text at once.
+    @objc func beginHighlight(_ sender: Any?) {
+        guard (pdfDoc?.pdf.pageCount ?? 0) > 0 else { return }
+        setMode(mode == .highlight ? .page : .highlight)
+    }
+
+    /// A click on the capsule: the first part toggles the tool, the second opens the styles.
+    @objc func highlightClicked(_ sender: NSSegmentedControl) {
+        if sender.isSelected(forSegment: 1) {          // the arrow: never stays pressed
+            sender.setSelected(false, forSegment: 1)
+            sender.setSelected(mode == .highlight, forSegment: 0)
+            showHighlightMenu(sender)
+        } else {
+            beginHighlight(sender)
+        }
+    }
+
+    /// The colours, then underline and strikethrough. Choosing one turns the tool on (and marks a selection).
+    @objc func showHighlightMenu(_ sender: NSView) {
+        let m = NSMenu()
+        let now = HighlightStyle.saved
+        for s in HighlightStyle.allCases {
+            if s == .underline { m.addItem(.separator()) }
+            let item = m.addItem(withTitle: s.title, action: #selector(highlightStylePicked(_:)), keyEquivalent: "")
+            item.tag = s.rawValue
+            item.image = s.swatch
+            item.keepImageVisible()
+            item.state = s == now ? .on : .off
+            item.target = self
+        }
+        // under the arrow part
+        let x = (sender as? NSSegmentedControl).map { $0.bounds.width - $0.width(forSegment: 1) - 8 } ?? 0
+        m.popUp(positioning: nil, at: NSPoint(x: max(x, 0), y: sender.bounds.height + 4), in: sender)
+    }
+
+    @objc func highlightStylePicked(_ sender: NSMenuItem) {
+        guard let s = HighlightStyle(rawValue: sender.tag) else { return }
+        HighlightStyle.saved = s
+        showHighlightStyle()
+        if mode == .highlight { markSelection() } else { setMode(.highlight) }
+    }
+
+    /// The tool button shows the chosen style: a highlighter, or the underline / strikethrough sign.
+    private func showHighlightStyle() {
+        highlightControl.setImage(Self.symbol(HighlightStyle.saved.symbol, L("Highlight")), forSegment: 0)
+    }
+
+    /// A text selection was finished (mouse released): with the tool on, mark it.
+    func selectionFinished() {
+        guard mode == .highlight else { return }
+        markSelection()
+    }
+
+    private func markSelection() {
+        guard let d = pdfDoc, let sel = pdfView.currentSelection,
+              !(sel.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        d.mark(sel, HighlightStyle.saved)
+        pdfView.clearSelection()
+    }
+
+    /// Right-click on a mark (highlight, underline, strikethrough): "Remove Highlight".
+    func markupMenu(for event: NSEvent) -> NSMenu? {
+        let at = pdfView.convert(event.locationInWindow, from: nil)
+        guard let page = pdfView.page(for: at, nearest: false) else { return nil }
+        let pt = pdfView.convert(at, to: page)
+        guard let a = page.annotations.last(where: { markupTypes.contains($0.type ?? "") && $0.bounds.contains(pt) }) else { return nil }
+        let m = NSMenu()
+        let item = m.addItem(withTitle: L("Remove Highlight"), action: #selector(removeMarkup(_:)), keyEquivalent: "")
+        item.image = NSImage(systemSymbolName: "eraser", accessibilityDescription: nil)
+        item.representedObject = (a, page)
+        item.target = self
+        return m
+    }
+
+    @objc func removeMarkup(_ sender: NSMenuItem) {
+        guard let (a, page) = sender.representedObject as? (PDFAnnotation, PDFPage) else { return }
+        pdfDoc?.swapAnnotation(a, nil, on: page, name: L("Remove Highlight"))
+    }
+
     // MARK: signatures (İmza)
 
-    /// "İmza": the panel of signatures on the right (in the page view).
+    /// "Signature": the panel of signatures on the right (in the page view).
     @objc func toggleSignatures(_ sender: Any?) {
         let open = inspectorItem.isCollapsed
-        if open && inGrid { setMode(.page) }
+        // one tool at a time: "Text", "White Out" or "Clean Margins" closes when the signatures open
+        if open && mode != .page { setMode(.page) }
         inspectorItem.animator().isCollapsed = !open
         if open { signaturePanel.reload() }
         updateStrip()
@@ -1512,7 +1779,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         r.origin.x = min(max(r.minX, box.minX), box.maxX - w)
         r.origin.y = min(max(r.minY, box.minY), box.maxY - h)
         let a = ImageAnnotation.make(image, bounds: r)
-        d.swapAnnotation(nil, a, on: page, name: "İmza")
+        d.swapAnnotation(nil, a, on: page, name: L("Signature"))
         selectionOverlay.selected = (a, page)
         window?.makeFirstResponder(pdfView)
         return true
@@ -1560,7 +1827,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
             selectionOverlay.needsDisplay = true
             if e.type == .leftMouseUp { break }
         }
-        if changed { d.movedAnnotation(a, from: from, on: page, name: corner == nil ? "İmzanın yerini dəyiş" : "İmzanın ölçüsünü dəyiş") }
+        if changed { d.movedAnnotation(a, from: from, on: page, name: corner == nil ? L("Move Signature") : L("Resize Signature")) }
         return true
     }
 
@@ -1568,7 +1835,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     func deleteSelectedSignature() -> Bool {
         guard let s = selectionOverlay.selected, let d = pdfDoc else { return false }
         selectionOverlay.selected = nil
-        d.swapAnnotation(s.a, nil, on: s.page, name: "İmzanı sil")
+        d.swapAnnotation(s.a, nil, on: s.page, name: L("Delete Signature"))
         return true
     }
 
@@ -1649,12 +1916,12 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
             // only scanned pages can be cleaned; from the grid they open the selected page
             return mode != .split && mode != .marginsApply && n > 0 && hasScans
         case #selector(whiteoutUndoLast(_:)):
-            return mode == .whiteout && d.undoManager?.undoActionName == "Ağart"
+            return mode == .whiteout && d.undoManager?.undoActionName == L("White Out")
         case #selector(marginsApply(_:)):
             return mode == .margins || (mode == .marginsApply && !grid.chosen.isEmpty)
         case #selector(marginsBack(_:)):
             return mode == .marginsApply
-        case #selector(beginText(_:)), #selector(toggleSignatures(_:)):
+        case #selector(beginText(_:)), #selector(toggleSignatures(_:)), #selector(beginHighlight(_:)), #selector(showHighlightMenu(_:)):
             return mode != .split && mode != .marginsApply && n > 0
         case #selector(previousPage(_:)):
             return !inGrid && currentPageIndex > 0
@@ -1673,8 +1940,8 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         case #selector(showGridMode(_:)): item.state = inGrid ? .on : .off
         case #selector(singlePage(_:)): item.state = mode == .page && pdfView.displayMode == .singlePageContinuous ? .on : .off
         case #selector(twoPages(_:)): item.state = mode == .page && pdfView.displayMode == .twoUpContinuous ? .on : .off
-        case #selector(toggleSidebarPanel(_:)): item.title = (!inGrid && sidebarWanted) ? "Sol paneli gizlət" : "Sol paneli göstər"
-        case #selector(splitVolume(_:)): item.title = mode == .split ? "Faylları yaz…" : "Sənədlərə parçala"
+        case #selector(toggleSidebarPanel(_:)): item.title = (!inGrid && sidebarWanted) ? L("Hide Sidebar") : L("Show Sidebar")
+        case #selector(splitVolume(_:)): item.title = mode == .split ? L("Write Files") : L("Split into Documents")
         default: break
         }
         return can(item.action)
@@ -1682,8 +1949,10 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
 
     func windowWillClose(_ notification: Notification) {
         NotificationCenter.default.removeObserver(self)
-        // the last document closed: back to the start window
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { WelcomeController.showIfIdle() }
+        // the last document closed: Papiro quits (it does not go back to the start window)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            if NSDocumentController.shared.documents.isEmpty { NSApp.terminate(nil) }
+        }
     }
 }
 

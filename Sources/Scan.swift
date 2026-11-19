@@ -2,7 +2,7 @@ import AppKit
 import PDFKit
 import UniformTypeIdentifiers
 
-/// Scanned pages: a page whose content is one picture the size of the page. "Kənarları təmizlə" and "Ağart" work
+/// Scanned pages: a page whose content is one picture the size of the page. "Clean Margins" and "White Out" work
 /// only on such pages, and they really remove what they paint over: the page is redrawn as a new picture with
 /// those parts white, so nothing of the old picture is left in the file.
 enum Scan {

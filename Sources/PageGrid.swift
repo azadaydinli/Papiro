@@ -16,7 +16,7 @@ final class PageCell: NSView {
     var selected = false { didSet { needsDisplay = true } }
     var group: Int? { didSet { needsDisplay = true } }   // 0-based document number
     var stackCount = 0 { didSet { needsDisplay = true } } // > 0: a collapsed document of that many pages
-    /// Choosing pages ("Tətbiq et"): nil = no checkbox; false = left out (the page is dimmed).
+    /// Choosing pages ("Apply"): nil = no checkbox; false = left out (the page is dimmed).
     var checked: Bool? { didSet { needsDisplay = true } }
     /// The page cannot be chosen (not a scan): dimmed, no checkbox.
     var disabled = false { didSet { needsDisplay = true } }
@@ -97,9 +97,9 @@ final class PageCell: NSView {
 
         if let g = group {
             let c = groupColors[g % groupColors.count]
-            pill("Sənəd \(g + 1)", at: CGPoint(x: r.minX + 6, y: r.minY + 6), fill: c, text: .white, left: true)
+            pill(L("Document %d", g + 1), at: CGPoint(x: r.minX + 6, y: r.minY + 6), fill: c, text: .white, left: true)
             if stackCount > 1 {
-                let s = "\(stackCount) səhifə"
+                let s = L("%d pages", stackCount)
                 let w = (s as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11, weight: .semibold)]).width + 12
                 pill(s, at: CGPoint(x: r.maxX - w - 6, y: r.maxY - 24), fill: NSColor.black.withAlphaComponent(0.65), text: .white, left: true)
             }
@@ -221,7 +221,7 @@ final class PageGrid: NSObject, NSCollectionViewDataSource, NSCollectionViewDele
     var doc: PDFDoc? { owner?.pdfDoc }
 
     var splitMode = false
-    /// Choosing pages to clean ("Tətbiq et" in "Kənarları təmizlə"): every page with a round checkbox.
+    /// Choosing pages to clean ("Apply" in "Clean Margins"): every page with a round checkbox.
     private(set) var choosing = false
     /// Chosen pages (0-based); pages `canChoose` refuses are never chosen.
     private(set) var chosen = Set<Int>()

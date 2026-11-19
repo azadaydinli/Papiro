@@ -1,7 +1,7 @@
 import AppKit
 import PDFKit
 
-/// "Böl": choose the folder, check the first number, write one PDF per marked document
+/// "Split": choose the folder, check the first number, write one PDF per marked document
 /// (Document_0059.pdf, Document_0060.pdf …). The first number continues after the highest
 /// Document_NNNN already in the chosen folder, so the next volume carries on the numbering.
 final class SplitPanel: NSObject, NSOpenSavePanelDelegate, NSTextFieldDelegate {
@@ -23,15 +23,15 @@ final class SplitPanel: NSObject, NSOpenSavePanelDelegate, NSTextFieldDelegate {
         super.init()
     }
 
-    /// `done`: the files written, the folder, and how many were left unwritten because "Dayandır" was pressed.
+    /// `done`: the files written, the folder, and how many were left unwritten because "Stop" was pressed.
     func run(done: @escaping (_ written: [String], _ folder: URL, _ skipped: Int) -> Void) {
         SplitPanel.running = self
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
-        panel.prompt = "Böl"
-        panel.message = "Sənədlərin yazılacağı qovluğu seçin (\(groups.count) sənəd)"
+        panel.prompt = L("Split")
+        panel.message = L("Choose the folder for the documents (%d documents)", groups.count)
         panel.delegate = self
         let start = UserDefaults.standard.url(forKey: "splitFolder") ?? doc.fileURL?.deletingLastPathComponent()
         panel.directoryURL = start
@@ -48,8 +48,8 @@ final class SplitPanel: NSObject, NSOpenSavePanelDelegate, NSTextFieldDelegate {
     }
 
     private func accessory() -> NSView {
-        let l1 = NSTextField(labelWithString: "Fayl adı:")
-        let l2 = NSTextField(labelWithString: "İlk nömrə:")
+        let l1 = NSTextField(labelWithString: L("File name:"))
+        let l2 = NSTextField(labelWithString: L("First number:"))
         prefixField.widthAnchor.constraint(equalToConstant: 160).isActive = true
         startField.widthAnchor.constraint(equalToConstant: 70).isActive = true
         prefixField.delegate = self
@@ -95,11 +95,11 @@ final class SplitPanel: NSObject, NSOpenSavePanelDelegate, NSTextFieldDelegate {
     }
 
     private func updateInfo() {
-        var t = "\(groups.count) fayl yaradılacaq: \(name(0))"
+        var t = L("%d files will be created: %@", groups.count, name(0))
         if groups.count > 1 { t += " … \(name(groups.count - 1))" }
         if !loose.isEmpty {
             let list = loose.prefix(12).map { String($0 + 1) }.joined(separator: ", ") + (loose.count > 12 ? " …" : "")
-            t += "\nHeç bir sənədə daxil olmayan \(loose.count) səhifə yazılmayacaq: \(list)"
+            t += "\n" + L("%d pages in no document will not be written: %@", loose.count, list)
         }
         info.stringValue = t
     }
@@ -119,9 +119,9 @@ final class SplitPanel: NSObject, NSOpenSavePanelDelegate, NSTextFieldDelegate {
         if !clash.isEmpty {
             SplitPanel.running = nil
             let a = NSAlert()
-            a.messageText = "Qovluqda bu adda fayllar artıq var"
+            a.messageText = L("The folder already has files with these names")
             a.informativeText = clash.prefix(8).joined(separator: "\n") + (clash.count > 8 ? "\n…" : "")
-                + "\n\nHeç nə yazılmadı. Başqa ilk nömrə və ya qovluq seçin."
+                + "\n\n" + L("Nothing was written. Choose another first number or folder.")
             a.beginSheetModal(for: window)
             return
         }
@@ -136,8 +136,8 @@ final class SplitPanel: NSObject, NSOpenSavePanelDelegate, NSTextFieldDelegate {
             SplitPanel.running = nil
             if let failed {
                 let a = NSAlert()
-                a.messageText = "Yazma dayandı: \(failed)"
-                a.informativeText = "\(written.count) fayl yazıldı. Qovluğa yazma icazəsini və boş yeri yoxlayın."
+                a.messageText = L("Writing stopped: %@", failed)
+                a.informativeText = L("Files written: %d. Check that the folder can be written to and has free space.", written.count)
                 a.beginSheetModal(for: window)
             } else {
                 done(written, dir, names.count - written.count)
@@ -168,12 +168,12 @@ final class SplitPanel: NSObject, NSOpenSavePanelDelegate, NSTextFieldDelegate {
     }
 }
 
-/// The sheet shown while files are written: "Yazılır: Document_0061.pdf (3 / 58)", a progress bar, "Dayandır".
+/// The sheet shown while files are written: "Yazılır: Document_0061.pdf (3 / 58)", a progress bar, "Stop".
 private final class ProgressSheet: NSObject {
     let window: NSWindow
     private let label = NSTextField(labelWithString: "")
     private let bar = NSProgressIndicator()
-    private let stopButton = NSButton(title: "Dayandır", target: nil, action: nil)
+    private let stopButton = NSButton(title: L("Stop"), target: nil, action: nil)
     private let total: Int
     private let onStop: () -> Void
 
@@ -209,12 +209,12 @@ private final class ProgressSheet: NSObject {
         window.contentView = content
     }
 
-    func show(file: String, index: Int) { label.stringValue = "Yazılır: \(file) (\(index + 1) / \(total))" }
+    func show(file: String, index: Int) { label.stringValue = L("Writing: %@ (%d / %d)", file, index + 1, total) }
     func advance(to n: Int) { bar.doubleValue = Double(n) }
 
     @objc private func stop() {
         stopButton.isEnabled = false
-        stopButton.title = "Dayandırılır…"
+        stopButton.title = L("Stopping…")
         onStop()
     }
 }

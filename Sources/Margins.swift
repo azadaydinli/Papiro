@@ -1,7 +1,7 @@
 import AppKit
 import PDFKit
 
-// "Kənarları təmizlə": everything outside a frame is painted white. The frame is found automatically
+// "Clean Margins": everything outside a frame is painted white. The frame is found automatically
 // (the main text and every sizeable block — signatures, stamps, emblems — but not punch holes, corner
 // sheet numbers or specks, which stand apart in white space) and can be adjusted by hand.
 // Frames are kept as fractions of the page's crop box (page space, unrotated), so one frame fits every page.
@@ -121,7 +121,7 @@ extension PDFDoc {
     @discardableResult
     func clearMargins(_ idx: [Int], frame: (Int) -> CGRect) -> [PDFPage] {
         var made: [PDFPage] = []
-        perform("Kənarları təmizlə") {
+        perform(L("Clean Margins")) {
             for i in idx {
                 let f = frame(i)
                 if f.minX <= 0.001 && f.minY <= 0.001 && f.maxX >= 0.999 && f.maxY >= 0.999 { continue } // nothing to clear

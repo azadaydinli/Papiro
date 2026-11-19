@@ -10,13 +10,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ n: Notification) {
-        // opened without a file: the start window ("Fayl seç" and the files opened last)
+        // opened without a file: the start window ("Open" and the files opened last)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { WelcomeController.showIfIdle() }
         // a newer version on GitHub? (at most once a day, a few seconds after opening)
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { Updater.shared.checkAutomatically() }
     }
 
-    /// Papiro → Yeniləmələri yoxla…
+    /// Papiro → Yeniləmələri yoxla
     @objc func checkForUpdates(_ sender: Any?) { Updater.shared.checkNow(sender) }
 
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { false }
@@ -26,13 +26,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
-    /// Fayl → Faylları birləşdir…: the chosen PDFs (in name order) become one new, unsaved document.
+    /// Fayl → Faylları birləşdir: the chosen PDFs (in name order) become one new, unsaved document.
     @objc func mergeFiles(_ sender: Any?) {
         let p = NSOpenPanel()
         p.allowedContentTypes = [.pdf]
         p.allowsMultipleSelection = true
-        p.message = "Birləşdiriləcək PDF fayllarını seçin (ad sırası ilə birləşəcək)"
-        p.prompt = "Birləşdir"
+        p.message = L("Choose the PDF files to merge (they are joined in name order)")
+        p.prompt = L("Merge")
         guard p.runModal() == .OK, !p.urls.isEmpty else { return }
         let urls = p.urls.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
         let merged = PDFDocument()
@@ -43,7 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let doc = PDFDoc()
         doc.pdf = merged
         doc.fileType = UTType.pdf.identifier
-        doc.displayName = "Birləşdirilmiş"
+        doc.displayName = L("Merged")
         NSDocumentController.shared.addDocument(doc)
         doc.makeWindowControllers()
         doc.showWindows()
@@ -68,85 +68,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let sep = { NSMenuItem.separator() }
 
         _ = sub("Papiro", [
-            it("Papiro haqqında", #selector(NSApplication.orderFrontStandardAboutPanel(_:))),
-            it("Yeniləmələri yoxla…", #selector(AppDelegate.checkForUpdates(_:))), sep(),
-            it("Papiro-nu gizlət", #selector(NSApplication.hide(_:)), "h"),
-            it("Digərlərini gizlət", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option]),
-            it("Hamısını göstər", #selector(NSApplication.unhideAllApplications(_:))), sep(),
-            it("Papiro-dan çıx", #selector(NSApplication.terminate(_:)), "q"),
+            it(L("About Papiro"), #selector(NSApplication.orderFrontStandardAboutPanel(_:))),
+            it(L("Check for Updates"), #selector(AppDelegate.checkForUpdates(_:))), sep(),
+            it(L("Hide Papiro"), #selector(NSApplication.hide(_:)), "h"),
+            it(L("Hide Others"), #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option]),
+            it(L("Show All"), #selector(NSApplication.unhideAllApplications(_:))), sep(),
+            it(L("Quit Papiro"), #selector(NSApplication.terminate(_:)), "q"),
         ])
 
-        let recent = it("Son açılanlar", nil)
-        let recentMenu = NSMenu(title: "Son açılanlar")
-        recentMenu.addItem(it("Siyahını təmizlə", #selector(NSDocumentController.clearRecentDocuments(_:))))
-        recent.submenu = recentMenu
-        let file = sub("Fayl", [
-            it("Aç…", #selector(NSDocumentController.openDocument(_:)), "o"), recent, sep(),
-            it("Faylları birləşdir…", #selector(mergeFiles(_:))), sep(),
-            it("Bağla", #selector(NSWindow.performClose(_:)), "w"),
-            it("Saxla", #selector(NSDocument.save(_:)), "s"),
-            it("Fərqli saxla…", #selector(NSDocument.saveAs(_:)), "s", [.command, .shift]),
-            it("Son saxlanana qaytar", #selector(NSDocument.revertToSaved(_:))), sep(),
-            it("Finder-də göstər", #selector(showInFinder(_:))), sep(),
-            it("Çap et…", #selector(NSDocument.printDocument(_:)), "p"),
+        // Open Recent, Duplicate, Rename, Move To and Revert To are put in by macOS itself (in the app's language)
+        let file = sub(L("File"), [
+            it(L("Open"), #selector(NSDocumentController.openDocument(_:)), "o"), sep(),
+            it(L("Merge Files"), #selector(mergeFiles(_:))), sep(),
+            it(L("Close"), #selector(NSWindow.performClose(_:)), "w"),
+            it(L("Save"), #selector(NSDocument.save(_:)), "s"),
+            it(L("Save As"), #selector(NSDocument.saveAs(_:)), "s", [.command, .shift]),
+            it(L("Revert to Saved"), #selector(NSDocument.revertToSaved(_:))), sep(),
+            it(L("Show in Finder"), #selector(showInFinder(_:))), sep(),
+            it(L("Print"), #selector(NSDocument.printDocument(_:)), "p"),
         ])
-        file.items.first { $0.title == "Faylları birləşdir…" }?.target = self
-        // macOS fills the "Son açılanlar" menu itself when it finds the clear item inside it
+        file.items.first { $0.action == #selector(mergeFiles(_:)) }?.target = self
 
-        _ = sub("Düzəliş", [
-            it("Geri al", Selector(("undo:")), "z"),
-            it("Təkrarla", Selector(("redo:")), "z", [.command, .shift]), sep(),
-            it("Kəs", #selector(NSText.cut(_:)), "x"),
-            it("Kopyala", #selector(NSText.copy(_:)), "c"),
-            it("Yapışdır", #selector(NSText.paste(_:)), "v"),
-            it("Hamısını seç", #selector(NSText.selectAll(_:)), "a"), sep(),
-            it("Tap…", #selector(DocWindowController.focusSearch(_:)), "f"),
+        _ = sub(L("Edit"), [
+            it(L("Undo"), Selector(("undo:")), "z"),
+            it(L("Redo"), Selector(("redo:")), "z", [.command, .shift]), sep(),
+            it(L("Cut"), #selector(NSText.cut(_:)), "x"),
+            it(L("Copy"), #selector(NSText.copy(_:)), "c"),
+            it(L("Paste"), #selector(NSText.paste(_:)), "v"),
+            it(L("Select All"), #selector(NSText.selectAll(_:)), "a"), sep(),
+            it(L("Find"), #selector(DocWindowController.focusSearch(_:)), "f"),
         ])
 
-        _ = sub("Görünüş", [
-            it("Səhifə", #selector(DocWindowController.showPageMode(_:)), "1"),
-            it("Səhifələr (şəbəkə)", #selector(DocWindowController.showGridMode(_:)), "2"), sep(),
-            it("Tək səhifə", #selector(DocWindowController.singlePage(_:))),
-            it("İki səhifə", #selector(DocWindowController.twoPages(_:))), sep(),
-            it("Sol paneli gizlət", #selector(DocWindowController.toggleSidebarPanel(_:)), "s", [.command, .option]), sep(),
-            it("Böyüt", #selector(DocWindowController.zoomInAction(_:)), "+"),
-            it("Kiçilt", #selector(DocWindowController.zoomOutAction(_:)), "-"),
-            it("Pəncərəyə sığdır", #selector(DocWindowController.zoomToFit(_:)), "9"),
-            it("Həqiqi ölçü", #selector(DocWindowController.actualSize(_:)), "0"), sep(),
-            it("Tam ekran", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control]),
+        _ = sub(L("View"), [
+            it(L("Page"), #selector(DocWindowController.showPageMode(_:)), "1"),
+            it(L("Grid"), #selector(DocWindowController.showGridMode(_:)), "2"), sep(),
+            it(L("Single Page"), #selector(DocWindowController.singlePage(_:))),
+            it(L("Two Pages"), #selector(DocWindowController.twoPages(_:))), sep(),
+            it(L("Hide Sidebar"), #selector(DocWindowController.toggleSidebarPanel(_:)), "s", [.command, .option]), sep(),
+            it(L("Zoom In"), #selector(DocWindowController.zoomInAction(_:)), "+"),
+            it(L("Zoom Out"), #selector(DocWindowController.zoomOutAction(_:)), "-"),
+            it(L("Zoom to Fit"), #selector(DocWindowController.zoomToFit(_:)), "9"),
+            it(L("Actual Size"), #selector(DocWindowController.actualSize(_:)), "0"), sep(),
+            it(L("Enter Full Screen"), #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control]),
         ])
 
-        _ = sub("Səhifələr", [
-            it("Sola döndər", #selector(DocWindowController.rotateLeft(_:)), "l"),
-            it("Sağa döndər", #selector(DocWindowController.rotateRight(_:)), "r"), sep(),
-            it("Çıxar…", #selector(DocWindowController.extractPages(_:)), "e", [.command, .option]),
-            it("Fayl əlavə et…", #selector(DocWindowController.appendFile(_:)), "a", [.command, .option]),
-            it("Boş səhifə əlavə et", #selector(DocWindowController.insertBlankPage(_:)), "n", [.command, .option]), sep(),
-            it("Sil", #selector(DocWindowController.deletePages(_:)), "\u{8}"), sep(),
-            it("Kənarları təmizlə…", #selector(DocWindowController.beginMargins(_:)), "k"),
-            it("Ağart…", #selector(DocWindowController.beginWhiteout(_:)), "w", [.command, .option]), sep(),
-            it("Sənədlərə parçala", #selector(DocWindowController.splitVolume(_:)), "b"),
-            it("Sənəd et", #selector(DocWindowController.markDocument(_:)), "\r"),
-            it("Ayır", #selector(DocWindowController.unmarkPages(_:))),
-            it("Hamısını ayır", #selector(DocWindowController.unmarkAll(_:))),
+        _ = sub(L("Pages"), [
+            it(L("Rotate Left"), #selector(DocWindowController.rotateLeft(_:)), "l"),
+            it(L("Rotate Right"), #selector(DocWindowController.rotateRight(_:)), "r"), sep(),
+            it(L("Export"), #selector(DocWindowController.extractPages(_:)), "e", [.command, .option]),
+            it(L("Add File"), #selector(DocWindowController.appendFile(_:)), "a", [.command, .option]),
+            it(L("Add Blank Page"), #selector(DocWindowController.insertBlankPage(_:)), "n", [.command, .option]), sep(),
+            it(L("Delete"), #selector(DocWindowController.deletePages(_:)), "\u{8}"), sep(),
+            it(L("Clean Margins"), #selector(DocWindowController.beginMargins(_:)), "k"),
+            it(L("White Out"), #selector(DocWindowController.beginWhiteout(_:)), "w", [.command, .option]), sep(),
+            it(L("Split into Documents"), #selector(DocWindowController.splitVolume(_:)), "b"),
+            it(L("Make Document"), #selector(DocWindowController.markDocument(_:)), "\r"),
+            it(L("Separate"), #selector(DocWindowController.unmarkPages(_:))),
+            it(L("Separate All"), #selector(DocWindowController.unmarkAll(_:))),
         ])
 
-        _ = sub("Keç", [
+        _ = sub(L("Go"), [
             // plain arrows stay with the page view / grid; the menu uses ⌥⌘ and ⌘
-            it("Əvvəlki səhifə", #selector(DocWindowController.previousPage(_:)), String(UnicodeScalar(NSUpArrowFunctionKey)!), [.command, .option]),
-            it("Növbəti səhifə", #selector(DocWindowController.nextPage(_:)), String(UnicodeScalar(NSDownArrowFunctionKey)!), [.command, .option]),
-            it("İlk səhifə", #selector(DocWindowController.firstPage(_:)), String(UnicodeScalar(NSUpArrowFunctionKey)!)),
-            it("Son səhifə", #selector(DocWindowController.lastPage(_:)), String(UnicodeScalar(NSDownArrowFunctionKey)!)), sep(),
-            it("Səhifəyə keç…", #selector(DocWindowController.goToPage(_:)), "g", [.command, .option]),
+            it(L("Previous Page"), #selector(DocWindowController.previousPage(_:)), String(UnicodeScalar(NSUpArrowFunctionKey)!), [.command, .option]),
+            it(L("Next Page"), #selector(DocWindowController.nextPage(_:)), String(UnicodeScalar(NSDownArrowFunctionKey)!), [.command, .option]),
+            it(L("First Page"), #selector(DocWindowController.firstPage(_:)), String(UnicodeScalar(NSUpArrowFunctionKey)!)),
+            it(L("Last Page"), #selector(DocWindowController.lastPage(_:)), String(UnicodeScalar(NSDownArrowFunctionKey)!)), sep(),
+            it(L("Go to Page"), #selector(DocWindowController.goToPage(_:)), "g", [.command, .option]),
         ])
 
-        let window = sub("Pəncərə", [
-            it("Kiçilt", #selector(NSWindow.performMiniaturize(_:)), "m"),
-            it("Böyüt", #selector(NSWindow.performZoom(_:))), sep(),
-            it("Hamısını önə gətir", #selector(NSApplication.arrangeInFront(_:))),
+        let window = sub(L("Window"), [
+            it(L("Minimize"), #selector(NSWindow.performMiniaturize(_:)), "m"),
+            it(L("Zoom"), #selector(NSWindow.performZoom(_:))), sep(),
+            it(L("Bring All to Front"), #selector(NSApplication.arrangeInFront(_:))),
         ])
         NSApp.windowsMenu = window
-        let help = sub("Kömək", [])
+        let help = sub(L("Help"), [])
         NSApp.helpMenu = help
         return main
     }

@@ -2,7 +2,7 @@ import AppKit
 import PDFKit
 import UniformTypeIdentifiers
 
-// "Mətn" (text boxes typed on a page) and "İmza" (PNG signatures dragged onto a page). Both are PDF annotations:
+// "Text" (text boxes typed on a page) and "Signature" (PNG signatures dragged onto a page). Both are PDF annotations:
 // text is a FreeText annotation (its font is embedded when the file is saved), a signature a Stamp whose picture
 // is drawn by `ImageAnnotation` and saved as its appearance. Every change is one undoable step.
 
@@ -47,7 +47,7 @@ final class ImageAnnotation: PDFAnnotation {
     }
 }
 
-/// `c` is a copy of `p` for a new file ("Sənədlərə parçala", "Çıxar"), already inside its new PDFDocument (changing
+/// `c` is a copy of `p` for a new file ("Split into Documents", "Export"), already inside its new PDFDocument (changing
 /// a copy before that would reach the original document's views). Signatures placed since the file was opened are
 /// drawn by code, which `PDFPage.copy()` does not carry over: they are put back as real copies. Pages without such
 /// signatures are not touched.
@@ -149,7 +149,7 @@ struct TextStyle: Equatable {
 
 // MARK: - text tool
 
-/// Drawn over the page view while "Mətn" is on: drag (or click) on a page to make a text box and type into it;
+/// Drawn over the page view while "Text" is on: drag (or click) on a page to make a text box and type into it;
 /// click a text box to edit it, drag it to move it. A box left empty is removed.
 final class TextOverlay: NSView, NSTextViewDelegate {
     weak var pdfView: PDFView?
@@ -332,7 +332,7 @@ final class TextOverlay: NSView, NSTextViewDelegate {
         needsDisplay = true
         e.old?.shouldDisplay = true
         if text.isEmpty {
-            if let old = e.old { swap?(old, nil, e.page, "Mətni sil") }
+            if let old = e.old { swap?(old, nil, e.page, L("Delete Text")) }
             else { pdfView?.annotationsChanged(on: e.page) }
         } else {
             let h = max(e.rect.height, textHeight(text, font: style.font(), width: e.rect.width) + 4)
@@ -349,7 +349,7 @@ final class TextOverlay: NSView, NSTextViewDelegate {
                 let border = PDFBorder()
                 border.lineWidth = 0
                 a.border = border
-                swap?(e.old, a, e.page, e.old == nil ? "Mətn" : "Mətni dəyiş")
+                swap?(e.old, a, e.page, e.old == nil ? L("Text") : L("Edit Text"))
             }
         }
         window?.makeFirstResponder(self)
@@ -428,23 +428,23 @@ enum SignatureStore {
 
 // MARK: - signature panel
 
-/// The panel on the right ("İmza"): the signatures one under another; "+" adds a PNG (a PNG dropped on the panel
-/// too); drag one onto a page to sign; right-click → "Sil".
+/// The panel on the right ("Signature"): the signatures one under another; "+" adds a PNG (a PNG dropped on the panel
+/// too); drag one onto a page to sign; right-click → "Delete".
 final class SignaturePanel: NSViewController {
     private let list = NSStackView()
-    private let empty = NSTextField(wrappingLabelWithString: "PNG formatında imza əlavə edin, sonra onu səhifəyə sürükləyin.")
+    private let empty = NSTextField(wrappingLabelWithString: L("Add a signature as a PNG, then drag it onto a page."))
 
     override func loadView() {
         let v = SignatureDropView()
         v.panel = self
         view = v
 
-        let title = NSTextField(labelWithString: "İmzalar")
+        let title = NSTextField(labelWithString: L("Signatures"))
         title.font = .systemFont(ofSize: 13, weight: .semibold)
-        let add = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: "İmza əlavə et")!, target: self, action: #selector(addSignature(_:)))
+        let add = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: L("Add Signature"))!, target: self, action: #selector(addSignature(_:)))
         add.bezelStyle = .glass
         add.borderShape = .circle
-        add.toolTip = "PNG imza əlavə et"
+        add.toolTip = L("Add PNG Signature")
         let header = NSStackView(views: [title, NSView(), add])
         header.spacing = 6
 
@@ -506,8 +506,8 @@ final class SignaturePanel: NSViewController {
         let p = NSOpenPanel()
         p.allowedContentTypes = [.png]
         p.allowsMultipleSelection = true
-        p.message = "İmza şəkli seçin (PNG, şəffaf fonlu olması yaxşıdır)"
-        p.prompt = "Əlavə et"
+        p.message = L("Choose a signature picture (PNG, best with a transparent background)")
+        p.prompt = L("Add")
         guard let w = view.window else { return }
         p.beginSheetModal(for: w) { r in
             guard r == .OK else { return }
@@ -520,7 +520,7 @@ final class SignaturePanel: NSViewController {
         reload()
         if !bad.isEmpty, let w = view.window {
             let a = NSAlert()
-            a.messageText = "Bu fayl imza kimi əlavə olunmadı"
+            a.messageText = L("This file could not be added as a signature")
             a.informativeText = bad.map(\.lastPathComponent).joined(separator: "\n")
             a.beginSheetModal(for: w)
         }
@@ -529,9 +529,9 @@ final class SignaturePanel: NSViewController {
     func remove(_ url: URL) {
         guard let w = view.window else { return }
         let a = NSAlert()
-        a.messageText = "Bu imza paneldən silinsin?"
-        a.informativeText = "Səhifələrə qoyulmuş imzalara toxunulmur."
-        a.addButton(withTitle: "Sil"); a.addButton(withTitle: "Ləğv et")
+        a.messageText = L("Remove this signature from the panel?")
+        a.informativeText = L("Signatures already placed on pages are not changed.")
+        a.addButton(withTitle: L("Delete")); a.addButton(withTitle: L("Cancel"))
         a.beginSheetModal(for: w) { r in
             guard r == .alertFirstButtonReturn else { return }
             SignatureStore.remove(url)
@@ -577,7 +577,7 @@ private final class SignatureTile: NSView, NSDraggingSource {
         layer?.borderWidth = 1
         translatesAutoresizingMaskIntoConstraints = false
         heightAnchor.constraint(equalToConstant: 92).isActive = true
-        toolTip = "Səhifəyə sürükləyin · sağ klik: Sil"
+        toolTip = L("Drag onto a page · right-click: Delete")
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -605,7 +605,7 @@ private final class SignatureTile: NSView, NSDraggingSource {
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let m = NSMenu()
-        let del = m.addItem(withTitle: "Sil", action: #selector(removeMe(_:)), keyEquivalent: "")
+        let del = m.addItem(withTitle: L("Delete"), action: #selector(removeMe(_:)), keyEquivalent: "")
         del.target = self
         return m
     }
