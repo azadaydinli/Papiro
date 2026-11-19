@@ -176,6 +176,10 @@ final class TextOverlay: NSView, NSTextViewDelegate {
         area(below: cover).contains(convert(point, from: superview)) ? super.hitTest(point) : nil
     }
     override func resetCursorRects() { addCursorRect(area(below: cover), cursor: .iBeam) }
+    /// An I-beam anywhere on the pages (a text box can be typed anywhere). nil under the tool bar.
+    func cursor(at windowPoint: NSPoint) -> NSCursor? {
+        area(below: cover).contains(convert(windowPoint, from: nil)) ? .iBeam : nil
+    }
     override func scrollWheel(with ev: NSEvent) {
         if let sv = pdfView?.documentView?.enclosingScrollView { sv.scrollWheel(with: ev) } else { pdfView?.scrollWheel(with: ev) }
     }

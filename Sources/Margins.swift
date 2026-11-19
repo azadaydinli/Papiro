@@ -217,11 +217,13 @@ final class MarginOverlay: NSView {
     }
 
     /// The page under the pointer and what part of its frame is there.
-    private func grabAt(_ ev: NSEvent) -> (PDFPage, Grab)? {
+    private func grabAt(_ ev: NSEvent) -> (PDFPage, Grab)? { grabAt(window: ev.locationInWindow) }
+
+    private func grabAt(window wp: NSPoint) -> (PDFPage, Grab)? {
         guard let pv = pdfView, let frameOf,
-              let p = pv.page(for: pv.convert(ev.locationInWindow, from: nil), nearest: false),
+              let p = pv.page(for: pv.convert(wp, from: nil), nearest: false),
               editable?(p) ?? true, let r = viewRect(frameOf(p), p) else { return nil }
-        let pt = convert(ev.locationInWindow, from: nil)
+        let pt = convert(wp, from: nil)
         guard area(below: cover).contains(pt) else { return nil }
         for (g, h) in handles(r) where hypot(h.x - pt.x, h.y - pt.y) < 10 { return (p, g) }
         let near: CGFloat = 6
@@ -243,6 +245,7 @@ final class MarginOverlay: NSView {
     override func mouseDown(with ev: NSEvent) {
         guard let (p, g) = grabAt(ev), let frameOf else { grab = nil; grabPage = nil; return }
         grab = g; grabPage = p
+        if g == .move { NSCursor.closedHand.set() }
         startFrac = frameOf(p)
         startPoint = fracPoint(ev, p) ?? .zero
     }
@@ -272,15 +275,28 @@ final class MarginOverlay: NSView {
         needsDisplay = true
     }
 
-    override func mouseUp(with ev: NSEvent) { grab = nil; grabPage = nil }
+    override func mouseUp(with ev: NSEvent) {
+        grab = nil; grabPage = nil
+        cursor(at: ev.locationInWindow)?.set()
+    }
 
-    override func mouseMoved(with ev: NSEvent) {
-        switch grabAt(ev)?.1 {
-        case .left?, .right?: NSCursor.resizeLeftRight.set()
-        case .top?, .bottom?: NSCursor.resizeUpDown.set()
-        case .move?: NSCursor.openHand.set()
-        case .tl?, .tr?, .bl?, .br?: NSCursor.crosshair.set()
-        case nil: NSCursor.arrow.set()
+    override func mouseMoved(with ev: NSEvent) { cursor(at: ev.locationInWindow)?.set() }
+
+    /// As Preview's selection frame: the system's frame-resize pointers on the edges and corners, an open hand
+    /// inside (closed while moving), an arrow elsewhere. nil under the tool bar.
+    func cursor(at windowPoint: NSPoint) -> NSCursor? {
+        guard area(below: cover).contains(convert(windowPoint, from: nil)) else { return nil }
+        switch grabAt(window: windowPoint)?.1 {
+        case .left?: return .frameResize(position: .left, directions: .all)
+        case .right?: return .frameResize(position: .right, directions: .all)
+        case .top?: return .frameResize(position: .top, directions: .all)
+        case .bottom?: return .frameResize(position: .bottom, directions: .all)
+        case .tl?: return .frameResize(position: .topLeft, directions: .all)
+        case .tr?: return .frameResize(position: .topRight, directions: .all)
+        case .bl?: return .frameResize(position: .bottomLeft, directions: .all)
+        case .br?: return .frameResize(position: .bottomRight, directions: .all)
+        case .move?: return grab == .move ? .closedHand : .openHand
+        case nil: return .arrow
         }
     }
 

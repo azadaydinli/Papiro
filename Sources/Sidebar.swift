@@ -208,31 +208,60 @@ final class PageSidebar: NSObject, NSCollectionViewDataSource, NSCollectionViewD
     var selected: [Int] { collection.selectionIndexPaths.map(\.item).sorted() }
 
     /// Select these pages (by the program: the page view is not moved).
-    func select(_ pages: [Int], scrollTo: Int? = nil) {
+    func select(_ pages: [Int], scrollTo: Int? = nil, animated: Bool = false) {
         let n = shownCount
         collection.selectionIndexPaths = Set(pages.filter { $0 < n }.map { IndexPath(item: $0, section: 0) })
         collection.anchor = pages.first
-        if let s = scrollTo ?? pages.first, s < n { reveal(s) }
+        if let s = scrollTo ?? pages.first, s < n { reveal(s, animated: animated) }
     }
 
-    /// The page view moved to another page: select it, unless it is one of the selected pages
-    /// (a page picked among several keeps the others selected).
+    /// The page view is on another page now: select it (unless it is one of the selected pages: a page picked among
+    /// several keeps the others) and, as Preview does, glide the list just far enough to show its picture whole,
+    /// at the nearest edge. While its picture is in view the list stays still.
     func follow(_ page: Int) {
-        guard page >= 0, page < shownCount else { return }
-        if !collection.selectionIndexPaths.contains(IndexPath(item: page, section: 0)) { select([page]) }
-        else { reveal(page) }
+        guard !holdStill, page >= 0, page < shownCount else { return }
+        if !collection.selectionIndexPaths.contains(IndexPath(item: page, section: 0)) {
+            collection.selectionIndexPaths = [IndexPath(item: page, section: 0)]
+            collection.anchor = page
+            selectionChanged?()
+        }
+        reveal(page, animated: true)
     }
+
+    /// On while the page view moves because a page was picked here: the selection and the list stay as they are.
+    private var holdStill = false
+    private var holdRelease: DispatchWorkItem?
 
     /// The number of pages the list holds now (the document may already have more or fewer, until `reload`).
     private var shownCount: Int { collection.numberOfSections > 0 ? collection.numberOfItems(inSection: 0) : 0 }
 
-    private func reveal(_ page: Int) {
-        guard page >= 0, page < shownCount else { return }
-        let ip = IndexPath(item: page, section: 0)
-        guard let frame = collection.layoutAttributesForItem(at: ip)?.frame else { return }
-        let visible = collection.visibleRect
-        if visible.contains(frame) { return }
-        collection.scrollToItems(at: [ip], scrollPosition: .nearestHorizontalEdge)
+    /// Scroll the list just enough to show the page (to the nearest edge, with a little room), gliding if asked.
+    private func reveal(_ page: Int, animated: Bool = false) {
+        guard page >= 0, page < shownCount,
+              let frame = collection.layoutAttributesForItem(at: IndexPath(item: page, section: 0))?.frame else { return }
+        let clip = scroll.contentView
+        let visible = clip.documentVisibleRect
+        let room: CGFloat = 8
+        var y = clip.bounds.origin.y
+        if frame.minY - room < visible.minY { y = frame.minY - room }
+        else if frame.maxY + room > visible.maxY { y = frame.maxY + room - visible.height }
+        else { return }
+        // within the list (the top may be under the toolbar: the clip view's own limits decide)
+        y = clip.constrainBoundsRect(NSRect(origin: NSPoint(x: clip.bounds.origin.x, y: y), size: clip.bounds.size)).origin.y
+        let to = NSPoint(x: clip.bounds.origin.x, y: y)
+        guard animated, collection.window != nil else {
+            clip.scroll(to: to)
+            scroll.reflectScrolledClipView(clip)
+            return
+        }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.25
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            clip.animator().setBoundsOrigin(to)
+        }, completionHandler: { [weak self] in
+            guard let self else { return }
+            self.scroll.reflectScrolledClipView(self.scroll.contentView)
+        })
     }
 
     /// Pages were added, removed, moved or turned: lay the list out again (pages keep their cached pictures).
@@ -361,9 +390,15 @@ final class PageSidebar: NSObject, NSCollectionViewDataSource, NSCollectionViewD
     }
     func collectionView(_ cv: NSCollectionView, didDeselectItemsAt ips: Set<IndexPath>) { selectionChanged?() }
 
-    /// The user picked this page (it may be one of several selected).
+    /// The user picked this page (it may be one of several selected). The page view goes there; the list stays.
     func picked(_ i: Int) {
+        holdStill = true
         show?(i)
+        // PDFKit finishes the move a little later: keep still until the page view has settled
+        holdRelease?.cancel()
+        let release = DispatchWorkItem { [weak self] in self?.holdStill = false }
+        holdRelease = release
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: release)
         selectionChanged?()
     }
 

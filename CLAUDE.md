@@ -16,10 +16,14 @@ bölməkdir (Böl): `Document_0001.pdf`, `Document_0002.pdf` … Bu fayllar sonr
 - Hər dəyişiklikdən sonra `./build.sh` xətasız və xəbərdarlıqsız keçməli, tətbiq açılıb əllə yoxlanılmalıdır.
 - Tapşırıqlar ardıcıl edilir, hər biri ayrıca git commit olur. İstifadəçi razılaşmadan dəyişiklik edilmir; tərəddüd olanda soruşulur.
 - `UserDefaults` açarları (`splitFolder`, `splitPrefix`, `extractFolder`, `sidebarWidth`) dəyişdirilmir.
-- Üst bar Önizleme kimidir (sağdan): axtarış (`NSSearchToolbarItem`), Çap et / Paylaş (bir qrup; Paylaş `NSSharingServicePicker`-i düymənin altında açır),
-  Kiçilt / faiz (klik — seçimlər) / Böyüt, Səhifə / Şəbəkə, Geri al / Təkrarla, Sola / Sağa döndər, Alətlər (alətlər barını
+- Kursorlar Önizleme kimidir: PDFKit skan səhifədə (şəkil) hər yerdə barmaq göstərir; `PageView.setCursorFor` / `fixCursor` onu düzəldir (mətndə I-beam, keçiddə barmaq, başqa yerdə ox); alət açıqdırsa kursoru alət verir (`cursor(at:)`: kənarlarda `NSCursor.frameResize`, içəridə əl; Ağart-da crosshair; Mətn-də I-beam).
+- Üst bar Önizleme kimidir (sağdan): axtarış (`NSSearchToolbarItem`), Çap et və Paylaş (iki adi element yan-yana: sistem onları ayırıcısız bir kapsula birləşdirir),
+  Səhifə / Şəbəkə, Kiçilt / faiz (klik — seçimlər) / Böyüt, Geri al / İrəli al, Sola / Sağa döndər, Alətlər (alətlər barını
   göstərir/gizlədir, `toolsShown`). Qruplar şəkilli `NSToolbarItemGroup` (momentary seqmentli düymə: klik animasiyası və
   ayırıcı xətlər); hissələrin aktivliyini AppKit yoxlamır, `updateToolbarStates` edir. İpuclarında yalnız düymənin adı olur.
+- "Sayfayı Sığdır" səhifəni üstdə və altda 12 nöqtəlik boşluqla (iki səhifə arası məsafənin yarısı) ortalayır; səhifəyə keçid (sol panel, Əvvəlki / Növbəti, şəbəkədən) bu miqyasda da ortalayır (`showPage`). Birinci və sonuncu səhifə üçün scroll view-un yuxarısında və aşağısında səhifə arası boşluq qədər yer var (`gapInset`, `contentInsets`), yoxsa AppKit görünüşü sənəd kənarına çəkirdi.
+- Miqyas balonunun orta hissəsi sabit enlidir (`fixZoomWidth`: "1000%" / "420 px" sığır), üst bar uzanıb-qısalmır.
+  Panellər (alətlər barı, sol panel, imza paneli) sürüşərkən səhifə hər kadrda sığdırılır (yumşaq böyüyüb-kiçilir), balondakı faiz isə yalnız animasiya bitəndə bir dəfə yenilənir (`animatePanels`).
 - Başlıq altında yazı yoxdur: səhifə nömrəsi ("3 / 120") və şəbəkədə seçim / işarələr sağ aşağı küncdəki şüşə balondadır (`PageBubble`).
 - Bundle id: `az.local.papiro`.
 - `../epis-extension` qovluğu bu layihəyə aid deyil, ona toxunulmur (başqa sessiyada işlənir).
@@ -58,7 +62,7 @@ yeni bir "Papiro" qoyur və Masaüstündəki nüsxə də quraşdırılmışın y
 | `PDFDoc.swift` | `NSDocument`: PDF, səhifə əməliyyatları (`perform` → geri alınır), Böl işarələri (`groups`), diskdəki sıra (`diskIndex`) |
 | `Marks.swift` | `MarkStore`: yarımçıq işarələmənin bərpası üçün işarələrin yerli müvəqqəti saxlanması |
 | `DocWindowController.swift` | Pəncərə: üst bar, alətlər barı, sol panel, sağda imza paneli (inspector), rejimlər (`page`, `grid`, `split`, `margins`, `marginsApply`, `whiteout`, `text`, `highlight`), bütün əmrlər |
-| `Sidebar.swift` | Sol panel (`PageSidebar`, öz `NSCollectionView`-u): səhifələrin cari görüntüsü (döndərilmiş, mətn / imza ilə), Önizleme kimi seçim fonu, ⌘/⇧ ilə bir neçə səhifə (Sil, İxrac et, Döndər onlara aiddir), sağ klik menyusu, sürükləyib yerini dəyişmək |
+| `Sidebar.swift` | Sol panel (`PageSidebar`, öz `NSCollectionView`-u): Önizleme kimi səhifəni izləyir: cari səhifə görünüşün ortasındakı səhifədir (`shownPage`, sürüşmə zamanı hər addımda; PDFKit-in cari səhifəsi yalnız sürüşmə dayananda dəyişir), seçilir və kiçik şəkli görünməyəndə siyahı yumşaq sürüşüb onu ən yaxın kənara gətirir (`follow`); kiçik şəklə klikdə siyahı tərpənmir; səhifələrin cari görüntüsü (döndərilmiş, mətn / imza ilə), Önizleme kimi seçim fonu, ⌘/⇧ ilə bir neçə səhifə (Sil, İxrac et, Döndər onlara aiddir), sağ klik menyusu, sürükləyib yerini dəyişmək |
 | `PageGrid.swift` | Səhifələr şəbəkəsi, Böl rejimində toplu vərəqlər (stack) və yığılma animasiyası, Shift+klik, "Tətbiq et" checkbox-ları |
 | `SplitPanel.swift` | "Faylları yaz": qovluq, nömrələmə (qovluqdakı ən böyük nömrədən davam), fonda yazma, `.partial`, "Dayandır" |
 | `Margins.swift` | "Kənarları təmizlə": məzmunun avtomatik tapılması (deşiklər və küncdəki nömrələr xaric), ağartma |

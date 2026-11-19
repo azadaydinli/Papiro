@@ -85,6 +85,14 @@ final class WhiteoutOverlay: NSView {
         area(below: cover).contains(convert(point, from: superview)) ? super.hitTest(point) : nil
     }
     override func resetCursorRects() { addCursorRect(area(below: cover), cursor: .crosshair) }
+
+    /// A crosshair (as Preview's rectangular selection) over pages that can be whitened, an arrow elsewhere.
+    /// nil under the tool bar.
+    func cursor(at windowPoint: NSPoint) -> NSCursor? {
+        guard area(below: cover).contains(convert(windowPoint, from: nil)) else { return nil }
+        guard let pv = pdfView, let p = pv.page(for: pv.convert(windowPoint, from: nil), nearest: false) else { return .arrow }
+        return editable?(p) ?? true ? .crosshair : .arrow
+    }
     // the wheel goes to the scroll view inside the page view (PDFView itself does not scroll on it)
     override func scrollWheel(with ev: NSEvent) {
         if let sv = pdfView?.documentView?.enclosingScrollView { sv.scrollWheel(with: ev) } else { pdfView?.scrollWheel(with: ev) }

@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 
 private extension NSToolbarItem.Identifier {
     static let sidebar = Self("sidebar"), mode = Self("mode"), zoom = Self("zoom"), search = Self("search")
-    static let rotate = Self("rotate"), tools = Self("tools"), share = Self("share"), history = Self("history")
+    static let rotate = Self("rotate"), tools = Self("tools"), share = Self("share"), history = Self("history"), print = Self("print")
 }
 
 /// The page view. Near the left panel's edge it leaves the mouse pointer to the split view (otherwise it would
@@ -63,10 +63,36 @@ final class PageView: PDFView {
     override func mouseMoved(with event: NSEvent) {
         if owner?.nearPanelEdge(event) == true { return }
         super.mouseMoved(with: event)
+        fixCursor(event.locationInWindow)
     }
+    /// Keep the view where it was (or fitted) when its size changes: see `pageViewResized`.
+    override func setFrameSize(_ newSize: NSSize) {
+        guard newSize != frame.size else { super.setFrameSize(newSize); return }
+        let y = owner?.scrollBeforeResize()
+        super.setFrameSize(newSize)
+        owner?.pageViewResized(scrolledTo: y)
+    }
+
     override func cursorUpdate(with event: NSEvent) {
         if owner?.nearPanelEdge(event) == true { return }
         super.cursorUpdate(with: event)
+        fixCursor(event.locationInWindow)
+    }
+
+    /// PDFKit shows a pointing hand over pictures, so on a scanned page (one picture) it is a hand everywhere.
+    /// Pointers as in Preview instead: an I-beam over text, a hand only over links, an arrow elsewhere; the open
+    /// tool (margins, whitening, text) decides over the pages.
+    override func setCursorFor(_ area: PDFAreaOfInterest) {
+        guard let w = window, let c = owner?.cursor(at: w.mouseLocationOutsideOfEventStream, area: area) else {
+            super.setCursorFor(area)
+            return
+        }
+        c.set()
+    }
+
+    private func fixCursor(_ windowPoint: NSPoint) {
+        let area = areaOfInterest(for: convert(windowPoint, from: nil))
+        owner?.cursor(at: windowPoint, area: area)?.set()
     }
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53, owner?.escape() == true { return }
@@ -128,7 +154,7 @@ final class PageBubble: NSGlassEffectView {
 /// - text: "Text" — text boxes typed on the pages.
 /// The signature panel ("Signature") opens on the right in the page view; signatures are dragged onto pages.
 final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSMenuItemValidation,
-                                 NSToolbarItemValidation, NSSearchFieldDelegate {
+                                 NSToolbarItemValidation, NSSearchFieldDelegate, NSSharingServicePickerToolbarItemDelegate {
     enum Mode { case page, grid, split, margins, marginsApply, whiteout, text, highlight }
 
     let pdfView = PageView()
@@ -209,6 +235,19 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     private var hasScans: Bool { pdfDoc?.pages.contains(where: isScan) ?? false }
     private var inGrid: Bool { mode == .grid || mode == .split || mode == .marginsApply }
 
+    /// The pointer over the page view (nil: PDFKit's own, e.g. the hand over a link).
+    func cursor(at windowPoint: NSPoint, area: PDFAreaOfInterest) -> NSCursor? {
+        switch mode {
+        case .margins: return overlay.cursor(at: windowPoint)
+        case .whiteout: return whiteOverlay.cursor(at: windowPoint)
+        case .text: return textOverlay.cursor(at: windowPoint)
+        default: break
+        }
+        if !area.isDisjoint(with: [.linkArea, .controlArea, .textFieldArea, .popupArea]) { return nil }
+        if area.contains(.textArea) { return .iBeam }
+        return .arrow
+    }
+
     /// Within a few points of the left panel's edge (where the split view shows its resize pointer).
     func nearPanelEdge(_ event: NSEvent) -> Bool {
         guard !sidebarItem.isCollapsed, sidebar.window != nil else { return false }
@@ -257,7 +296,13 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
             updatePageLabel()
             updateStrip()
             // the split view restores its last state (possibly folded in the grid): show the panel as the mode wants
-            DispatchQueue.main.async { self.sidebarReady = true; self.applySidebar(); self.sidebarResized(); self.fitPage(nil) }   // open showing the whole first page
+            DispatchQueue.main.async {
+                self.sidebarReady = true; self.applySidebar(); self.sidebarResized()
+                // open showing the whole first page, centred: the window (tool bar included) is laid out first,
+                // otherwise the page was fitted to a view that then changed size
+                self.window?.layoutIfNeeded()
+                self.fitPage(nil)
+            }
             NotificationCenter.default.removeObserver(self, name: .pagesChanged, object: nil)
             NotificationCenter.default.addObserver(self, selector: #selector(docChanged), name: .pagesChanged, object: d)
             for n in [Notification.Name.NSUndoManagerDidCloseUndoGroup, .NSUndoManagerDidUndoChange, .NSUndoManagerDidRedoChange] {
@@ -294,7 +339,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         side.owner = self
         side.show = { [weak self] i in
             guard let self, let p = self.pdfDoc?.pdf.page(at: i), p !== self.pdfView.currentPage else { return }
-            self.pdfView.go(to: p)
+            self.showPage(p)
         }
         side.selectionChanged = { [weak self] in self?.selectionChanged() }
         side.collection.menu = sideMenu()
@@ -382,8 +427,6 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
             }
         }
         NotificationCenter.default.addObserver(self, selector: #selector(scaleChanged), name: .PDFViewScaleChanged, object: pdfView)
-        pdfView.postsFrameChangedNotifications = true
-        NotificationCenter.default.addObserver(self, selector: #selector(pageViewResized), name: NSView.frameDidChangeNotification, object: pdfView)
 
         // its own identifier: toolbars sharing one keep the same items, so a search opened in one window
         // would open in every other window as well
@@ -529,7 +572,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     }
 
     private var squares: [ObjectIdentifier: NSLayoutConstraint] = [:]
-    private var pageTools: [NSView] { [bAdd, bExtract, bDelete, bWhite, bText, highlightControl, bSign] }
+    private var pageTools: [NSView] { [bAdd, bExtract, bDelete, bWhite, bText, bSign, highlightControl] }
 
     /// "Clean Margins" and "Split into Documents" show their names; only a window too narrow for them makes
     /// them icons as well.
@@ -750,7 +793,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     // undo / redo; rotate left / right; "Alətlər" (the tool bar below). Groups share one glass capsule.
     // The flexible space before the panel button keeps it at the panel's right edge, following its width.
     private static let items: [NSToolbarItem.Identifier] =
-        [.flexibleSpace, .sidebar, .sidebarTrackingSeparator, .flexibleSpace, .tools, .rotate, .history, .mode, .zoom, .share, .search]
+        [.flexibleSpace, .sidebar, .sidebarTrackingSeparator, .flexibleSpace, .tools, .rotate, .history, .zoom, .mode, .print, .share, .search]
     func toolbarDefaultItemIdentifiers(_ t: NSToolbar) -> [NSToolbarItem.Identifier] { Self.items }
     func toolbarAllowedItemIdentifiers(_ t: NSToolbar) -> [NSToolbarItem.Identifier] { Self.items }
 
@@ -819,8 +862,31 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
 
     /// The scale on the middle part of the zoom control ("112%"; in the grid the thumbnail width).
     private func updateZoomLabel() {
-        guard let g = zoomGroup, g.subitems.count == 3 else { return }
+        guard panelsMoving == 0, let g = zoomGroup, g.subitems.count == 3 else { return }   // not percent by percent
         g.subitems[1].title = inGrid ? "\(Int(grid.itemWidth)) px" : "\(Int((pdfView.scaleFactor * 100).rounded()))%"
+        fixZoomWidth()
+    }
+
+    /// The scale's part keeps one width whatever it shows ("83%", "1000%", "420 px"), so the toolbar does not grow
+    /// and shrink as the scale changes. (The toolbar draws the group as a segmented control: set that part's width.)
+    private func fixZoomWidth() {
+        if zoomControl?.window == nil, let frame = window?.contentView?.superview {
+            zoomControl = Self.segmentedControl(in: frame) { c in
+                c.segmentCount == 3 && c.image(forSegment: 0)?.accessibilityDescription == L("Zoom Out")
+            }
+        }
+        guard let c = zoomControl else { return }
+        let font = c.font ?? .systemFont(ofSize: NSFont.systemFontSize)
+        let widest = ["1000%", "420 px"].map { ($0 as NSString).size(withAttributes: [.font: font]).width }.max() ?? 40
+        let w = (widest + 18).rounded()
+        if abs(c.width(forSegment: 1) - w) > 0.5 { c.setWidth(w, forSegment: 1) }
+    }
+    private weak var zoomControl: NSSegmentedControl?
+
+    private static func segmentedControl(in v: NSView, where test: (NSSegmentedControl) -> Bool) -> NSSegmentedControl? {
+        if let c = v as? NSSegmentedControl, test(c) { return c }
+        for sub in v.subviews { if let c = segmentedControl(in: sub, where: test) { return c } }
+        return nil
     }
 
     private func showZoomMenu() {
@@ -866,12 +932,15 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
             toolsGroup = g
             updateStripVisibility()
             return g
+        case .print:
+            // two plain items side by side share one glass capsule, with no line between them (as in Preview)
+            return barItem("print", L("Print"), "printer", #selector(printDocument(_:)), tip: L("Print"))
         case .share:
-            // "Çap et" and "Paylaş" in one capsule, like the other groups
-            let g = segments(id, L("Print / Share"), ["printer", "square.and.arrow.up"], [L("Print"), L("Share")],
-                             [L("Print"), L("Share")], #selector(printShareClicked(_:)))
-            shareGroup = g
-            return g
+            let i = NSSharingServicePickerToolbarItem(itemIdentifier: id)
+            i.label = L("Share")
+            i.toolTip = L("Share")
+            i.delegate = self
+            return i
         case .history:
             let g = segments(id, L("Undo / Redo"), ["arrow.uturn.backward", "arrow.uturn.forward"], [L("Undo"), L("Redo")],
                              [L("Undo"), L("Redo")], #selector(historyClicked(_:)))
@@ -919,33 +988,10 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         return [url]
     }
 
-    private var shareGroup: NSToolbarItemGroup?
+    @objc func printDocument(_ sender: Any?) { pdfDoc?.printDocument(sender) }
 
-    /// "Çap et" prints the document; "Paylaş" opens the system share menu under its button.
-    @objc func printShareClicked(_ sender: NSToolbarItemGroup) {
-        if sender.selectedIndex == 0 { pdfDoc?.printDocument(sender); return }
-        let items = shareItems()
-        guard !items.isEmpty, let frame = window?.contentView?.superview else { return }
-        let picker = NSSharingServicePicker(items: items)
-        // the toolbar draws the group as a segmented control: point at its "Paylaş" half (or, failing that, the mouse)
-        if let control = Self.segmentedControl(in: frame, labelled: L("Share")) {
-            let half = control.bounds.width / 2
-            picker.show(relativeTo: NSRect(x: half, y: 0, width: half, height: control.bounds.height), of: control, preferredEdge: .minY)
-        } else {
-            let p = frame.convert(window!.mouseLocationOutsideOfEventStream, from: nil)
-            picker.show(relativeTo: NSRect(x: p.x - 1, y: p.y - 1, width: 2, height: 2), of: frame, preferredEdge: .minY)
-        }
-    }
-
-    /// The toolbar's segmented control that has a part with this label.
-    private static func segmentedControl(in v: NSView, labelled label: String) -> NSSegmentedControl? {
-        if let c = v as? NSSegmentedControl,
-           (0..<c.segmentCount).contains(where: { c.label(forSegment: $0) == label || c.image(forSegment: $0)?.accessibilityDescription == label || c.toolTip(forSegment: $0) == label }) {
-            return c
-        }
-        for s in v.subviews { if let c = segmentedControl(in: s, labelled: label) { return c } }
-        return nil
-    }
+    /// "Paylaş": the document's file.
+    func items(for pickerToolbarItem: NSSharingServicePickerToolbarItem) -> [Any] { shareItems() }
 
     /// "Alətlər": show or hide the tool bar (it stays while a tool that needs it is open).
     @objc func toolsClicked(_ sender: NSToolbarItemGroup) {
@@ -959,10 +1005,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         let needed: Set<Mode> = [.split, .margins, .marginsApply, .text, .whiteout, .highlight]
         let show = toolsWanted || needed.contains(mode)
         if stripBar.isHidden == show {
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.2
-                stripBar.animator().isHidden = !show
-            }
+            animatePanels(duration: 0.2) { self.stripBar.animator().isHidden = !show }
         }
         toolsGroup?.setSelected(show, at: 0)
     }
@@ -987,12 +1030,13 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         selectionOverlay.selected = nil
         // the signature panel closes in the grid, and for the other tools (one tool at a time)
         if [.grid, .split, .marginsApply, .margins, .whiteout, .text, .highlight].contains(m), !inspectorItem.isCollapsed {
-            inspectorItem.animator().isCollapsed = true
+            animatePanels { self.inspectorItem.animator().isCollapsed = true }
         }
+        let wasInGrid = inGrid
         mode = m
         pdfView.isHidden = inGrid
         grid.scroll.isHidden = !inGrid
-        applySidebar()
+        applySidebar(relayout: wasInGrid && !inGrid)
         if inGrid {
             let wasGrid = old == .grid || old == .split
             let keep = wasGrid ? grid.selected : [current]
@@ -1009,8 +1053,8 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         } else {
             let wasPageView = old == .page || old == .margins || old == .whiteout || old == .text || old == .highlight
             if old == .marginsApply {
-                if let p = pdfDoc?.pdf.page(at: applyReturnPage) { pdfView.go(to: p) }
-            } else if !wasPageView, let p = pdfDoc?.pdf.page(at: current) { pdfView.go(to: p) }
+                if let p = pdfDoc?.pdf.page(at: applyReturnPage) { showPage(p) }
+            } else if !wasPageView, let p = pdfDoc?.pdf.page(at: current) { showPage(p) }
             window?.makeFirstResponder(pdfView)
             if m == .margins { if old == .marginsApply { overlay.isHidden = false } else { startMargins() } }
             if m == .whiteout { startWhiteout() }
@@ -1037,19 +1081,21 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         if sidebarReady && !inGrid && !sidebarAnimating { sidebarWanted = !sidebarItem.isCollapsed }
         guard sidebar.bounds.width > 60 else { return }
         side.resized()
-        refit()
     }
 
     /// The panel shows with a single page (also while cleaning margins or whitening); it leaves no trace when hidden.
-    private func applySidebar() {
+    /// `relayout`: the page view was hidden (the grid was shown) and must lay its pages out again.
+    private func applySidebar(relayout: Bool = false) {
         let show = !inGrid && sidebarWanted
-        if sidebarItem.isCollapsed == show {
+        let changes = sidebarItem.isCollapsed == show
+        if changes {
             sidebarAnimating = true
-            NSAnimationContext.runAnimationGroup({ _ in self.sidebarItem.animator().isCollapsed = !show },
-                                                 completionHandler: { [weak self] in self?.sidebarAnimating = false })
+            animatePanels({ self.sidebarItem.animator().isCollapsed = !show }, then: { [weak self] in self?.sidebarAnimating = false })
         }
         if show { DispatchQueue.main.async { self.sidebarResized() } }
-        if !inGrid { pdfView.layoutDocumentView() }
+        // laying the pages out again moves the view to the top: only when something changed (switching tools in
+        // the page view did it every time, and the page jumped up and back)
+        if !inGrid && (changes || relayout) { pdfView.layoutDocumentView() }
     }
 
     @objc func toggleSidebarPanel(_ sender: Any?) {
@@ -1104,7 +1150,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
 
     @objc func pageChanged() {
         pdfView.sharpenAnnotations()
-        if !inGrid { side.follow(currentPageIndex) }
+        if !inGrid { side.follow(shownPage) }
         updatePageLabel()
         if !inGrid { updateStrip() }
         overlay.needsDisplay = true
@@ -1112,6 +1158,16 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     }
 
     @objc func viewScrolled() {
+        // PDFKit tells about a new page only once the scrolling stops: the list and the page number follow the
+        // page in the middle of the view at every step instead
+        if !inGrid {
+            let p = shownPage
+            if p != lastShownPage {
+                lastShownPage = p
+                side.follow(p)
+                updatePageLabel()
+            }
+        }
         pdfView.sharpenAnnotations()
         if mode == .margins { overlay.needsDisplay = true }
         if mode == .whiteout { whiteOverlay.needsDisplay = true }
@@ -1119,7 +1175,19 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         selectionOverlay.needsDisplay = true
     }
 
+    /// The page in the middle of the visible part of the page view: the page the user is on (it changes while
+    /// scrolling, unlike PDFKit's current page, which waits for the scrolling to stop).
+    var shownPage: Int {
+        guard let d = pdfDoc?.pdf, d.pageCount > 0 else { return 0 }
+        let free = visiblePageArea()
+        guard let page = pdfView.page(for: NSPoint(x: free.midX, y: free.midY), nearest: true) else { return currentPageIndex }
+        let i = d.index(for: page)
+        return i == NSNotFound ? currentPageIndex : i
+    }
+    private var lastShownPage = -1
+
     @objc func scaleChanged() {
+        updateGapInset()
         if !settingScale { fit = nil }        // pinched or set by PDFKit: no longer fitting
         updateZoomLabel()
         overlay.needsDisplay = true; whiteOverlay.needsDisplay = true
@@ -1152,7 +1220,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         guard n > 0 else { bubble.show([]); return }
         switch mode {
         case .page, .margins, .whiteout, .text, .highlight:
-            bubble.show([(nil, "\(currentPageIndex + 1) / \(n)")])
+            bubble.show([(nil, "\(shownPage + 1) / \(n)")])
         case .grid:
             let s = grid.selected
             bubble.show(s.count == 0 ? [(nil, "\(n)")]
@@ -1204,39 +1272,93 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         pdfView.scaleFactor = s
         settingScale = false
         fit = f
+        updateGapInset()
     }
 
-    /// The view changed size: fit again as asked last (after the layout has settled).
-    private func refit() {
-        guard fit != nil, !inGrid else { return }
-        refitPending?.cancel()
-        let job = DispatchWorkItem { [weak self] in
-            guard let self, !self.inGrid else { return }
-            switch self.fit {
-            case .page: self.fitPage(nil)
-            case .width: self.fitWidth(nil)
-            case nil: break
-            }
-        }
-        refitPending = job
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: job)
+    /// Room above the first page and below the last one, as wide as the gap between two pages. Without it the first
+    /// (or last) page could not be centred like the others: "Sayfayı Sığdır" scrolled past the document's edge, and
+    /// AppKit pulled the view back at its next layout, so the page stuck to the top and the next one peeked in.
+    private var gapInset: CGFloat = 0
+    private func updateGapInset() {
+        guard let sv = pdfView.documentView?.enclosingScrollView else { return }
+        let m = ((pdfView.pageBreakMargins.top + pdfView.pageBreakMargins.bottom) / 2 * pdfView.scaleFactor).rounded()
+        guard abs(m - gapInset) > 0.5 || sv.automaticallyAdjustsContentInsets else { return }
+        var i = sv.contentInsets
+        i.top += m - gapInset; i.bottom += m - gapInset
+        gapInset = m
+        sv.automaticallyAdjustsContentInsets = false
+        sv.contentInsets = i
     }
-    private var refitPending: DispatchWorkItem?
-    @objc private func pageViewResized() { refit() }
+
+    /// Go to a page. At the "Sayfayı Sığdır" scale the page is centred with its gaps, exactly as that command does
+    /// (PDFKit's `go(to:)` puts its top at the top, so the next page peeks in at the bottom); otherwise its top is
+    /// shown at the top.
+    func showPage(_ p: PDFPage) {
+        pdfView.go(to: p)
+        guard fit == .page, !inGrid else { return }
+        pdfView.layoutDocumentView()
+        centre(p)
+    }
+
+    /// Where the page view is scrolled, just before its size changes.
+    func scrollBeforeResize() -> CGFloat? {
+        guard !inGrid, pdfDoc != nil else { return nil }
+        return pdfView.documentView?.enclosingScrollView?.contentView.bounds.origin.y
+    }
+
+    /// The page view changed size (window, left panel, signature panel). PDFKit scrolls it to the top as it lays
+    /// the pages out again: in the same step, before anything is drawn, fit again as asked last, or go back to
+    /// where it was. (Done later, the page jumped up and back down while a panel opened or closed.)
+    func pageViewResized(scrolledTo y: CGFloat?) {
+        guard !inGrid, pdfDoc != nil, !fitting else { return }
+        fitting = true
+        defer { fitting = false }
+        // while a panel slides in or out the page is fitted at every step, so it grows or shrinks smoothly with
+        // the panel; only the percentage waits for the end (`animatePanels`, `updateZoomLabel`)
+        switch fit {
+        case .page: fitPage(nil)
+        case .width: fitWidth(nil)
+        case nil:
+            guard let y, let clip = pdfView.documentView?.enclosingScrollView?.contentView, clip.bounds.origin.y != y else { return }
+            clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: y))
+            clip.enclosingScrollView?.reflectScrolledClipView(clip)
+        }
+    }
+    private var fitting = false
+
+    /// Panels (tool bar, left panel, signature panel) sliding in or out. Meanwhile the page follows them smoothly but
+    /// the percentage in the toolbar stays; when the last one stops it shows the new scale, in one step.
+    private var panelsMoving = 0
+
+    private func animatePanels(duration: TimeInterval? = nil, _ changes: @escaping () -> Void, then: (() -> Void)? = nil) {
+        panelsMoving += 1
+        NSAnimationContext.runAnimationGroup({ ctx in
+            if let duration { ctx.duration = duration }
+            changes()
+        }, completionHandler: { [weak self] in
+            guard let self else { return }
+            then?()
+            self.panelsMoving -= 1
+            if self.panelsMoving == 0 {
+                self.pageViewResized(scrolledTo: nil)
+                self.updateZoomLabel()
+            }
+        })
+    }
 
     @objc func zoomToFit(_ sender: Any?) {
         if inGrid { grid.itemWidth = 170; sizeSlider.doubleValue = 170 } else { fitPage(nil) }
         updateZoomLabel()
     }
 
-    /// "Səhifəni sığdır": the whole current page fits, with a gap above and below it as wide as the gap between two
-    /// pages, so the next page does not show; the page is centred in the part of the view the bars leave free.
+    /// "Sayfayı Sığdır": the whole current page fits, with a gap above and below it half as wide as the gap between
+    /// two pages (so the next page does not show); the page is centred in the part of the view the bars leave free.
     @objc func fitPage(_ sender: Any?) {
         guard let p = pdfView.currentPage ?? pdfDoc?.pdf.page(at: 0) else { return }
         var size = p.bounds(for: pdfView.displayBox).size
         if p.rotation % 180 != 0 { size = CGSize(width: size.height, height: size.width) }
         let free = visiblePageArea()
-        let gap = pdfView.pageBreakMargins.top + pdfView.pageBreakMargins.bottom   // between two pages, page points
+        let gap = (pdfView.pageBreakMargins.top + pdfView.pageBreakMargins.bottom) / 2   // half the gap between two pages (12 pt)
         guard size.width > 0, size.height > 0, free.width > 0, free.height > 0 else { return }
         setScale(min(free.width / (size.width + 2 * gap), free.height / (size.height + 2 * gap)), fit: .page)
         pdfView.layoutDocumentView()
@@ -1267,7 +1389,8 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
 
     /// The part of the page view not covered by the bars floating over it (in page-view coordinates).
     private func visiblePageArea() -> CGRect {
-        let insets = pdfView.documentView?.enclosingScrollView?.contentInsets ?? NSEdgeInsetsZero
+        var insets = pdfView.documentView?.enclosingScrollView?.contentInsets ?? NSEdgeInsetsZero
+        insets.top -= gapInset; insets.bottom -= gapInset        // our own room above and below is free space
         let b = pdfView.bounds
         let y = pdfView.isFlipped ? b.minY + insets.top : b.minY + insets.bottom
         return CGRect(x: b.minX + insets.left, y: y,
@@ -1296,7 +1419,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     private func go(_ i: Int) {
         guard let d = pdfDoc?.pdf, d.pageCount > 0 else { return }
         let k = max(0, min(i, d.pageCount - 1))
-        if inGrid { grid.select([k]) } else if let p = d.page(at: k) { pdfView.go(to: p) }
+        if inGrid { grid.select([k]) } else if let p = d.page(at: k) { showPage(p) }
     }
 
     @objc func goToPage(_ sender: Any?) {
@@ -1360,7 +1483,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         guard let d = pdfDoc, can(#selector(insertBlankPage(_:))) else { return }
         let at = (targetPages.last ?? -1) + 1
         d.insertBlank(at: at)
-        if inGrid { grid.select([at]) } else if let p = d.pdf.page(at: at) { pdfView.go(to: p) }
+        if inGrid { grid.select([at]) } else if let p = d.pdf.page(at: at) { showPage(p) }
     }
 
     @objc func appendFile(_ sender: Any?) {
@@ -1380,7 +1503,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
             guard !pages.isEmpty else { return }
             let at = self.inGrid ? (self.grid.selected.last.map { $0 + 1 } ?? d.pdf.pageCount) : d.pdf.pageCount
             let new = d.insert(pages, at: at)
-            if self.inGrid { self.grid.select(new) } else if let pg = d.pdf.page(at: new[0]) { self.pdfView.go(to: pg) }
+            if self.inGrid { self.grid.select(new) } else if let pg = d.pdf.page(at: new[0]) { self.showPage(pg) }
         }
     }
 
@@ -1448,7 +1571,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     @objc func finishSplit(_ sender: Any?) {
         let back = splitReturn
         setMode(back.mode)
-        if let i = back.page, let p = pdfDoc?.pdf.page(at: i) { pdfView.go(to: p) }
+        if let i = back.page, let p = pdfDoc?.pdf.page(at: i) { showPage(p) }
     }
 
     @objc func markDocument(_ sender: Any?) {
@@ -1580,7 +1703,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         guard pdfView.currentPage != nil else { return }
         let i = currentPageIndex
         applyMargins(to: [i])
-        if let p = pdfDoc?.pdf.page(at: i) { pdfView.go(to: p) }
+        if let p = pdfDoc?.pdf.page(at: i) { showPage(p) }
     }
 
     /// Clean the given pages with their frames and stay in the tool (their frames now cover the whole page).
@@ -1614,7 +1737,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         applyMargins(to: pages)
         let at = applyReturnPage
         setMode(.page)
-        if let p = d.pdf.page(at: at) { pdfView.go(to: p) }
+        if let p = d.pdf.page(at: at) { showPage(p) }
     }
 
     /// "Back" (or Esc) while choosing pages: back to the frames, nothing cleaned.
@@ -1760,7 +1883,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         let open = inspectorItem.isCollapsed
         // one tool at a time: "Text", "White Out" or "Clean Margins" closes when the signatures open
         if open && mode != .page { setMode(.page) }
-        inspectorItem.animator().isCollapsed = !open
+        animatePanels { self.inspectorItem.animator().isCollapsed = !open }
         if open { signaturePanel.reload() }
         updateStrip()
     }
@@ -1851,7 +1974,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     /// Back to the same spot; if that page was turned meanwhile, to the top of it (the old point no longer fits).
     private func restore(_ spot: (Int, CGPoint, Int)?) {
         guard let (i, pt, rotation) = spot, let p = pdfDoc?.pdf.page(at: i) else { return }
-        if p.rotation == rotation { pdfView.go(to: PDFDestination(page: p, at: pt)) } else { pdfView.go(to: p) }
+        if p.rotation == rotation { pdfView.go(to: PDFDestination(page: p, at: pt)) } else { showPage(p) }
     }
 
     @objc func beginWhiteout(_ sender: Any?) {
