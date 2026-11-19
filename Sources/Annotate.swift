@@ -445,10 +445,10 @@ final class SignaturePanel: NSViewController {
 
         let title = NSTextField(labelWithString: L("Signatures"))
         title.font = .systemFont(ofSize: 13, weight: .semibold)
-        let add = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: L("Add Signature"))!, target: self, action: #selector(addSignature(_:)))
+        let add = NSButton(image: NSImage(systemSymbolName: "plus", accessibilityDescription: L("Add Signature"))!, target: self, action: #selector(showAddMenu(_:)))
         add.bezelStyle = .glass
         add.borderShape = .circle
-        add.toolTip = L("Add PNG Signature")
+        add.toolTip = L("Add Signature")
         let header = NSStackView(views: [title, NSView(), add])
         header.spacing = 6
 
@@ -504,6 +504,27 @@ final class SignaturePanel: NSViewController {
             tile.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
         }
         empty.isHidden = !urls.isEmpty
+    }
+
+    /// Set by the window: the next picture from the iPhone is a signature.
+    var willOfferImport: (() -> Void)?
+
+    /// "+": a PNG file, or a picture from the iPhone (a sketch drawn there, or a photo of a signature on paper).
+    @objc func showAddMenu(_ sender: NSButton) {
+        let m = NSMenu()
+        let file = m.addItem(withTitle: L("Add Signature from File"), action: #selector(addSignature(_:)), keyEquivalent: "")
+        file.image = NSImage(systemSymbolName: "doc.badge.plus", accessibilityDescription: nil)
+        file.target = self
+        willOfferImport?()
+        DeviceImport.popUp(m, under: sender)
+    }
+
+    /// A picture from the iPhone: its paper made transparent, trimmed, added to the panel.
+    func addFromDevice(_ pb: NSPasteboard) -> Bool {
+        guard let img = DeviceImport.picture(from: pb), let sig = DeviceImport.signature(from: img),
+              DeviceImport.storeSignature(sig) != nil else { return false }
+        reload()
+        return true
     }
 
     @objc func addSignature(_ sender: Any?) {

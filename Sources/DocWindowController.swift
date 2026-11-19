@@ -154,7 +154,7 @@ final class PageBubble: NSGlassEffectView {
 /// - text: "Text" — text boxes typed on the pages.
 /// The signature panel ("Signature") opens on the right in the page view; signatures are dragged onto pages.
 final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSMenuItemValidation,
-                                 NSToolbarItemValidation, NSSearchFieldDelegate, NSSharingServicePickerToolbarItemDelegate {
+                                 NSToolbarItemValidation, NSSearchFieldDelegate, NSSharingServicePickerToolbarItemDelegate, NSServicesMenuRequestor {
     enum Mode { case page, grid, split, margins, marginsApply, whiteout, text, highlight }
 
     let pdfView = PageView()
@@ -343,6 +343,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         }
         side.selectionChanged = { [weak self] in self?.selectionChanged() }
         side.collection.menu = sideMenu()
+        signaturePanel.willOfferImport = { [weak self] in self?.importTarget = .signature }
         pin(side.scroll, in: sidebar, safeTop: true)
         sidebarItem = NSSplitViewItem(sidebarWithViewController: sideVC)
         sidebarItem.minimumThickness = Self.sidebarRange.lowerBound
@@ -743,6 +744,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     }
 
     /// "+": a small menu — pages of another PDF, or a blank page.
+    /// "+": pages of another PDF, a blank page, or pages from the iPhone ("iPhone’dan İçe Aktar").
     @objc func showAddMenu(_ sender: NSButton) {
         let m = NSMenu()
         let file = m.addItem(withTitle: L("Add File"), action: #selector(appendFile(_:)), keyEquivalent: "")
@@ -750,7 +752,38 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         let blank = m.addItem(withTitle: L("Add Blank Page"), action: #selector(insertBlankPage(_:)), keyEquivalent: "")
         blank.image = NSImage(systemSymbolName: "doc", accessibilityDescription: nil)
         m.items.forEach { $0.target = self }
-        m.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+        importTarget = .pages
+        DeviceImport.popUp(m, under: sender)
+    }
+
+    // MARK: iPhone (Continuity Camera)
+
+    /// Where a picture or scan from the iPhone goes: set by the menu that offered it ("+" or the signatures' "+").
+    var importTarget: DeviceImport = .pages
+
+    /// macOS asks who can take a picture or a PDF (to offer "iPhone’dan İçe Aktar"): this window can.
+    override func validRequestor(forSendType sendType: NSPasteboard.PasteboardType?,
+                                 returnType: NSPasteboard.PasteboardType?) -> Any? {
+        if sendType == nil, let r = returnType, DeviceImport.types.contains(r), pdfDoc != nil,
+           importTarget == .signature || can(#selector(insertBlankPage(_:))) {
+            return self
+        }
+        return super.validRequestor(forSendType: sendType, returnType: returnType)
+    }
+
+    /// What the iPhone sent: pages after the current page (one undoable step), or a new signature.
+    func readSelection(from pb: NSPasteboard) -> Bool {
+        switch importTarget {
+        case .signature:
+            return signaturePanel.addFromDevice(pb)
+        case .pages:
+            guard let d = pdfDoc else { return false }
+            let pages = DeviceImport.pages(from: pb)
+            guard !pages.isEmpty else { return false }
+            let new = d.insert(pages, at: (targetPages.last ?? -1) + 1)
+            if inGrid { grid.select(new) } else if let p = d.pdf.page(at: new[0]) { showPage(p) }
+            return true
+        }
     }
 
     /// Right-click in the left panel: the selected pages.
@@ -1124,15 +1157,32 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     /// The pages selected in the left panel before the pages changed: selected again afterwards, where they still are.
     private var sideBeforeChange: [PDFPage]?
 
+    /// The page in the middle of the view before the pages changed, and how it was turned: if it is turned now,
+    /// it is the page to keep in view (the saved spot belongs to the page at the top of the view, maybe another).
+    private var focusBeforeChange: (page: PDFPage, rotation: Int)?
+
     @objc func docWillChange() {
         if !inGrid && spotBeforeChange == nil { spotBeforeChange = viewSpot() }
+        if !inGrid && focusBeforeChange == nil, let p = pdfDoc?.pdf.page(at: shownPage) { focusBeforeChange = (p, p.rotation) }
         if sideBeforeChange == nil { sideBeforeChange = side.selected.compactMap { pdfDoc?.pdf.page(at: $0) } }
     }
 
     @objc func docChanged() {
         if inGrid { grid.reload() }
+        // laid out again in one step, with no implicit animation: PDFKit's page layers otherwise slid to their new
+        // size, and after a turn a strip of the page as it was showed for a moment (Preview turns at once too)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         pdfView.layoutDocumentView()
-        if !inGrid, let spot = spotBeforeChange { restore(spot) }
+        if !inGrid {
+            if let f = focusBeforeChange, f.page.rotation != f.rotation, pdfDoc?.pdf.index(for: f.page) != NSNotFound {
+                showPage(f.page)           // the page just turned: shown (centred at "Sayfayı Sığdır"), same scale
+            } else if let spot = spotBeforeChange {
+                restore(spot)
+            }
+        }
+        focusBeforeChange = nil
+        CATransaction.commit()
         spotBeforeChange = nil
         if let d = pdfDoc?.pdf {
             let keep = (sideBeforeChange ?? side.selected.compactMap { d.page(at: $0) })
@@ -1404,7 +1454,12 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         let page = clip.convert(pdfView.convert(p.bounds(for: pdfView.displayBox), from: p), from: pdfView)
         let free = clip.convert(visiblePageArea(), from: pdfView)
         let dx = clip.documentRect.width > clip.bounds.width + 1 ? page.midX - free.midX : 0
-        clip.scroll(to: NSPoint(x: clip.bounds.origin.x + dx, y: clip.bounds.origin.y + (vertically ? page.midY - free.midY : 0)))
+        var to = clip.bounds
+        to.origin.x += dx
+        to.origin.y += vertically ? page.midY - free.midY : 0
+        // never past the document's edges (and the room kept above and below them): AppKit would pull such a
+        // position back at its next layout and the page would jump — the first or last page then rests at the edge
+        clip.scroll(to: clip.constrainBoundsRect(to).origin)
         sv.reflectScrolledClipView(clip)
     }
     @objc func actualSize(_ sender: Any?) { setMode(.page); setScale(1) }

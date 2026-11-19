@@ -6,6 +6,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ n: Notification) {
         NSWindow.allowsAutomaticWindowTabbing = true
         NSApp.mainMenu = buildMenu()
+        // "iPhone’dan İçe Aktar" (Continuity Camera): macOS offers it only to apps that say they take pictures / PDFs
+        NSApp.registerServicesMenuSendTypes([], returnTypes: DeviceImport.types)
         MarkStore.removeOld()
     }
 
@@ -79,7 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Open Recent, Duplicate, Rename, Move To and Revert To are put in by macOS itself (in the app's language)
         let file = sub(L("File"), [
             it(L("Open"), #selector(NSDocumentController.openDocument(_:)), "o"), sep(),
-            it(L("Merge Files"), #selector(mergeFiles(_:))), sep(),
+            it(L("Merge Files"), #selector(mergeFiles(_:))), DeviceImport.holder(), sep(),
             it(L("Close"), #selector(NSWindow.performClose(_:)), "w"),
             it(L("Save"), #selector(NSDocument.save(_:)), "s"),
             it(L("Save As"), #selector(NSDocument.saveAs(_:)), "s", [.command, .shift]),

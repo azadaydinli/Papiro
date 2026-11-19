@@ -10,7 +10,6 @@
 "Add" = "Ekle";
 "Add Blank Page" = "Boş Sayfa Ekle";
 "Add File" = "Dosya Ekle";
-"Add PNG Signature" = "PNG İmza Ekle";
 "Add Pages" = "Sayfa Ekle";
 "Add Signature" = "İmza Ekle";
 "Add Text" = "Metin Ekle";
@@ -177,3 +176,6 @@
 "Purple" = "Mor";
 "Underline" = "Altı Çizgili";
 "Strikethrough" = "Üstü Çizgili";
+
+/* iPhone */
+"Add Signature from File" = "Dosyadan İmza Ekle";

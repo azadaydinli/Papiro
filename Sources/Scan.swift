@@ -51,6 +51,58 @@ enum Scan {
         return best
     }
 
+    /// Where the page draws its largest picture (page space), found by reading the page's drawing commands:
+    /// the picture's square transformed by the current matrix at its "Do". nil when it draws no picture itself.
+    static func pictureFrame(_ page: PDFPage) -> CGRect? {
+        guard let ref = page.pageRef, let pageDict = ref.dictionary else { return nil }
+        let finder = FrameFinder()
+        // the names of the page's pictures
+        var resources: CGPDFDictionaryRef?, xobjects: CGPDFDictionaryRef?
+        guard CGPDFDictionaryGetDictionary(pageDict, "Resources", &resources), let resources,
+              CGPDFDictionaryGetDictionary(resources, "XObject", &xobjects), let xobjects else { return nil }
+        CGPDFDictionaryApplyBlock(xobjects, { key, object, _ in
+            var stream: CGPDFStreamRef?, subtype: UnsafePointer<CChar>?
+            if CGPDFObjectGetValue(object, .stream, &stream), let stream, let d = CGPDFStreamGetDictionary(stream),
+               CGPDFDictionaryGetName(d, "Subtype", &subtype), let subtype, String(cString: subtype) == "Image" {
+                finder.images.insert(String(cString: key))
+            }
+            return true
+        }, nil)
+        guard !finder.images.isEmpty, let table = CGPDFOperatorTableCreate() else { return nil }
+        CGPDFOperatorTableSetCallback(table, "q") { _, info in let f = Unmanaged<FrameFinder>.fromOpaque(info!).takeUnretainedValue(); f.stack.append(f.ctm) }
+        CGPDFOperatorTableSetCallback(table, "Q") { _, info in
+            let f = Unmanaged<FrameFinder>.fromOpaque(info!).takeUnretainedValue()
+            if let m = f.stack.popLast() { f.ctm = m }
+        }
+        CGPDFOperatorTableSetCallback(table, "cm") { s, info in
+            let f = Unmanaged<FrameFinder>.fromOpaque(info!).takeUnretainedValue()
+            var v = [CGPDFReal](repeating: 0, count: 6)
+            for i in (0..<6).reversed() { guard CGPDFScannerPopNumber(s, &v[i]) else { return } }
+            f.ctm = CGAffineTransform(a: v[0], b: v[1], c: v[2], d: v[3], tx: v[4], ty: v[5]).concatenating(f.ctm)
+        }
+        CGPDFOperatorTableSetCallback(table, "Do") { s, info in
+            let f = Unmanaged<FrameFinder>.fromOpaque(info!).takeUnretainedValue()
+            var name: UnsafePointer<CChar>?
+            guard CGPDFScannerPopName(s, &name), let name, f.images.contains(String(cString: name)) else { return }
+            let r = CGRect(x: 0, y: 0, width: 1, height: 1).applying(f.ctm)
+            if r.width * r.height > (f.best.map { $0.width * $0.height } ?? 0) { f.best = r }
+        }
+        let content = CGPDFContentStreamCreateWithPage(ref)
+        let scanner = CGPDFScannerCreate(content, table, Unmanaged.passUnretained(finder).toOpaque())
+        CGPDFScannerScan(scanner)
+        CGPDFScannerRelease(scanner)
+        CGPDFContentStreamRelease(content)
+        CGPDFOperatorTableRelease(table)
+        return finder.best
+    }
+
+    private final class FrameFinder {
+        var ctm = CGAffineTransform.identity
+        var stack: [CGAffineTransform] = []
+        var images = Set<String>()
+        var best: CGRect?
+    }
+
     /// A scanned page: its largest picture has the page's shape (either way round) and at least 50 dpi.
     static func isScanned(_ page: PDFPage) -> Bool {
         guard let pic = mainPicture(page) else { return false }
