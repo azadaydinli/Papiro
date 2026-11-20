@@ -117,22 +117,35 @@ final class PDFDoc: NSDocument {
 
     private func registerRestore(_ s: Snapshot, _ name: String) {
         undoManager?.registerUndo(withTarget: self) { doc in
-            doc.willChange()
-            let now = doc.snapshot()
-            doc.apply(s)
-            doc.registerRestore(now, name)
-            doc.changed()
+            doc.withoutAnimation {
+                doc.willChange()
+                let now = doc.snapshot()
+                doc.apply(s)
+                doc.registerRestore(now, name)
+                doc.changed()
+            }
         }
         undoManager?.setActionName(name)
     }
 
     /// Run a page edit as one undoable step.
     func perform(_ name: String, _ body: () -> Void) {
-        willChange()
-        let before = snapshot()
+        withoutAnimation {
+            willChange()
+            let before = snapshot()
+            body()
+            registerRestore(before, name)
+            changed()
+        }
+    }
+
+    /// Page edits show at once, as in Preview: PDFKit otherwise faded the page as it was over the page as it is
+    /// (after turning a page, or undoing / redoing it, a ghost of the old page showed for a moment).
+    private func withoutAnimation(_ body: () -> Void) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         body()
-        registerRestore(before, name)
-        changed()
+        CATransaction.commit()
     }
 
     func willChange() { NotificationCenter.default.post(name: .pagesWillChange, object: self) }

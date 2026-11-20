@@ -4,7 +4,8 @@ import UniformTypeIdentifiers
 
 private extension NSToolbarItem.Identifier {
     static let sidebar = Self("sidebar"), mode = Self("mode"), zoom = Self("zoom"), search = Self("search")
-    static let rotate = Self("rotate"), tools = Self("tools"), share = Self("share"), history = Self("history"), print = Self("print")
+    static let tools = Self("tools"), share = Self("share"), print = Self("print")
+    static let rotateLeft = Self("rotateLeft"), rotateRight = Self("rotateRight"), undo = Self("undo"), redo = Self("redo")
 }
 
 /// The page view. Near the left panel's edge it leaves the mouse pointer to the split view (otherwise it would
@@ -178,8 +179,6 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     private var modeGroup: NSToolbarItemGroup?
     /// Rotate, undo / redo and zoom: segmented controls (as "Səhifə / Şəbəkə"), so they react to a click like the
     /// other toolbar buttons and show dividers between their parts.
-    private var rotateGroup: NSToolbarItemGroup?
-    private var historyGroup: NSToolbarItemGroup?
     private var zoomGroup: NSToolbarItemGroup?
     private static let zoomSteps: [CGFloat] = [0.5, 0.75, 1, 1.25, 1.5, 2, 3]
     /// The toolbar's search field (the system one, as in Preview).
@@ -477,20 +476,58 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         w.toolTip = L("Color")
         return w
     }()
-    /// "Highlight" and its style menu in one glass capsule, as in Preview: a segmented control whose first part
-    /// turns the tool on and off and whose second part opens the styles.
-    private lazy var highlightControl: NSSegmentedControl = {
-        let c = NSSegmentedControl(images: [Self.symbol(HighlightStyle.saved.symbol, L("Highlight")), Self.symbol("chevron.down", L("Highlight Style"))],
-                                   trackingMode: .selectAny, target: self, action: #selector(highlightClicked(_:)))
-        c.segmentStyle = .automatic
-        c.borderShape = .capsule
-        c.controlSize = .extraLarge
-        c.setToolTip(L("Highlight"), forSegment: 0)
-        c.setToolTip(L("Highlight Style"), forSegment: 1)
-        c.translatesAutoresizingMaskIntoConstraints = false
-        c.heightAnchor.constraint(equalToConstant: Self.buttonSize).isActive = true
-        return c
+    /// "Vurgula" as in Preview: one liquid-glass capsule (interactive, as glass holding controls should be) with the
+    /// highlighter, a divider and the arrow for the styles. Turned on, the highlighter sits on a glass circle of its
+    /// own and the divider goes; with the styles open, the arrow does.
+    private lazy var bHighlight = capsulePart(HighlightStyle.saved.symbol, L("Highlight"), #selector(beginHighlight(_:)))
+    private lazy var bHighlightStyle = capsulePart("chevron.down", L("Highlight Style"), #selector(showHighlightMenu(_:)))
+    private let highlightDivider: NSBox = {
+        let line = NSBox()
+        line.boxType = .separator
+        line.translatesAutoresizingMaskIntoConstraints = false
+        line.heightAnchor.constraint(equalToConstant: 18).isActive = true
+        line.widthAnchor.constraint(equalToConstant: 1).isActive = true
+        return line
     }()
+    private lazy var highlightCapsule: NSGlassEffectView = {
+        let row = NSStackView(views: [bHighlight.superview!, highlightDivider, bHighlightStyle.superview!])
+        // 3.25 + 29 + 4.25 + 1 + 4.25 + 29 + 3.25 = 74 pt: the glass shows 72.5 pt, as Preview's capsule; both circles the same size
+        row.spacing = 4.25
+        row.edgeInsets = NSEdgeInsets(top: 0, left: 3.25, bottom: 0, right: 3.25)
+        row.detachesHiddenViews = false
+        let g = NSGlassEffectView()
+        // not interactive glass: that squeezes the whole capsule on a click; each part answers on its own (as in Preview)
+        g.cornerRadius = Self.buttonSize / 2
+        g.contentView = row
+        g.translatesAutoresizingMaskIntoConstraints = false
+        g.heightAnchor.constraint(equalToConstant: Self.buttonSize).isActive = true
+        g.widthAnchor.constraint(equalToConstant: 74).isActive = true      // never changes (hover, press, on)
+        return g
+    }()
+
+    /// A button inside the glass capsule, on a part of its own that shows a glass circle while the pointer is over
+    /// it, brightens it while pressed and keeps it while "on" (as the parts of Preview's toolbar capsules).
+    private func capsulePart(_ symbol: String, _ name: String, _ action: Selector) -> NSButton {
+        let b = CapsulePartButton(image: Self.symbol(symbol, name), target: self, action: action)
+        b.isBordered = false
+        b.toolTip = name
+        let part = CapsulePart(button: b, size: 29)
+        part.changed = { [weak self] in self?.updateDivider() }
+        return b
+    }
+
+    /// A part of the capsule shown "on" (its glass circle stays).
+    private func showOn(_ b: NSButton, _ on: Bool) {
+        (b.superview as? CapsulePart)?.isOn = on
+        updateDivider()
+    }
+
+    /// The divider goes while either part shows its circle (hovered or on), as in Preview.
+    private func updateDivider() {
+        let parts = [bHighlight, bHighlightStyle].compactMap { $0.superview as? CapsulePart }
+        // faded rather than hidden, so nothing in the capsule moves
+        highlightDivider.alphaValue = parts.contains { $0.showsCircle } ? 0 : 1
+    }
 
     /// A tool symbol, the size of the other tool buttons' symbols.
     private static func symbol(_ name: String, _ label: String) -> NSImage {
@@ -573,7 +610,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     }
 
     private var squares: [ObjectIdentifier: NSLayoutConstraint] = [:]
-    private var pageTools: [NSView] { [bAdd, bExtract, bDelete, bWhite, bText, bSign, highlightControl] }
+    private var pageTools: [NSView] { [bAdd, bExtract, bDelete, bWhite, bText, bSign, highlightCapsule] }
 
     /// "Clean Margins" and "Split into Documents" show their names; only a window too narrow for them makes
     /// them icons as well.
@@ -722,9 +759,9 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         }
         bMargins.state = mode == .margins ? .on : .off
         bWhite.state = mode == .whiteout ? .on : .off
-        highlightControl.setSelected(mode == .highlight, forSegment: 0)
-        highlightControl.setSelected(false, forSegment: 1)
-        highlightControl.isEnabled = can(#selector(beginHighlight(_:)))
+        showOn(bHighlight, mode == .highlight)
+        bHighlight.isEnabled = can(#selector(beginHighlight(_:)))
+        bHighlightStyle.isEnabled = bHighlight.isEnabled
         showHighlightStyle()
         bText.state = mode == .text ? .on : .off
         bSign.state = inspectorItem.isCollapsed ? .off : .on
@@ -826,7 +863,8 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     // undo / redo; rotate left / right; "Alətlər" (the tool bar below). Groups share one glass capsule.
     // The flexible space before the panel button keeps it at the panel's right edge, following its width.
     private static let items: [NSToolbarItem.Identifier] =
-        [.flexibleSpace, .sidebar, .sidebarTrackingSeparator, .flexibleSpace, .tools, .rotate, .history, .zoom, .mode, .print, .share, .search]
+        [.flexibleSpace, .sidebar, .sidebarTrackingSeparator, .flexibleSpace, .tools,
+         .rotateLeft, .rotateRight, .space, .undo, .redo, .zoom, .mode, .print, .share, .search]
     func toolbarDefaultItemIdentifiers(_ t: NSToolbar) -> [NSToolbarItem.Identifier] { Self.items }
     func toolbarAllowedItemIdentifiers(_ t: NSToolbar) -> [NSToolbarItem.Identifier] { Self.items }
 
@@ -835,6 +873,9 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     }
 
     /// One toolbar button (also used inside groups).
+    @objc func undoClicked(_ sender: Any?) { history(undo: true) }
+    @objc func redoClicked(_ sender: Any?) { history(undo: false) }
+
     private func barItem(_ id: String, _ label: String, _ symbol: String, _ action: Selector, tip: String, toResponders: Bool = false) -> NSToolbarItem {
         let i = NSToolbarItem(itemIdentifier: .init(id))
         i.label = label
@@ -857,13 +898,9 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         return g
     }
 
-    @objc func rotateClicked(_ sender: NSToolbarItemGroup) {
-        if sender.selectedIndex == 0 { rotateLeft(sender) } else { rotateRight(sender) }
-    }
 
     /// Through the responder chain: the text being typed undoes its typing, otherwise the document its last step.
-    @objc func historyClicked(_ sender: NSToolbarItemGroup) {
-        let undo = sender.selectedIndex == 0
+    private func history(undo: Bool) {
         if !NSApp.sendAction(undo ? Selector(("undo:")) : Selector(("redo:")), to: nil, from: self) {
             if undo { pdfDoc?.undoManager?.undo() } else { pdfDoc?.undoManager?.redo() }
         }
@@ -873,15 +910,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     /// The parts of the segmented controls are not validated by AppKit: enable them here (after every change,
     /// undo, redo, mode or selection change).
     @objc func updateToolbarStates() {
-        if let g = historyGroup, g.subitems.count == 2 {
-            let um = window?.firstResponder?.undoManager ?? pdfDoc?.undoManager
-            g.subitems[0].isEnabled = um?.canUndo ?? false
-            g.subitems[1].isEnabled = um?.canRedo ?? false
-        }
-        if let g = rotateGroup {
-            let ok = can(#selector(rotateLeft(_:)))
-            g.subitems.forEach { $0.isEnabled = ok }
-        }
+        window?.toolbar?.validateVisibleItems()          // undo / redo follow the undo manager at once
         if let g = zoomGroup, g.subitems.count == 3 { g.subitems[1].isEnabled = !inGrid }
     }
 
@@ -950,11 +979,16 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
             return NSTrackingSeparatorToolbarItem(identifier: id, splitView: splitVC.splitView, dividerIndex: 0)
         case .sidebar:
             return barItem("sidebar", L("Show Sidebar"), "sidebar.left", #selector(toggleSidebarPanel(_:)), tip: L("Show Sidebar"))
-        case .rotate:
-            let g = segments(id, L("Rotate"), ["rotate.left", "rotate.right"], [L("Rotate Left"), L("Rotate Right")],
-                             [L("Rotate Left"), L("Rotate Right")], #selector(rotateClicked(_:)))
-            rotateGroup = g
-            return g
+        // plain buttons side by side share one glass capsule with no line between them (as in Preview); a space
+        // keeps rotate and undo / redo in capsules of their own
+        case .rotateLeft:
+            return barItem("rotateLeft", L("Rotate Left"), "rotate.left", #selector(rotateLeft(_:)), tip: L("Rotate Left"))
+        case .rotateRight:
+            return barItem("rotateRight", L("Rotate Right"), "rotate.right", #selector(rotateRight(_:)), tip: L("Rotate Right"))
+        case .undo:
+            return barItem("undo", L("Undo"), "arrow.uturn.backward", #selector(undoClicked(_:)), tip: L("Undo"))
+        case .redo:
+            return barItem("redo", L("Redo"), "arrow.uturn.forward", #selector(redoClicked(_:)), tip: L("Redo"))
         case .tools:
             let g = NSToolbarItemGroup(itemIdentifier: id,
                                        images: [NSImage(systemSymbolName: "pencil.tip.crop.circle", accessibilityDescription: L("Tool Bar"))!],
@@ -974,11 +1008,6 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
             i.toolTip = L("Share")
             i.delegate = self
             return i
-        case .history:
-            let g = segments(id, L("Undo / Redo"), ["arrow.uturn.backward", "arrow.uturn.forward"], [L("Undo"), L("Redo")],
-                             [L("Undo"), L("Redo")], #selector(historyClicked(_:)))
-            historyGroup = g
-            return g
         case .mode:
             let g = NSToolbarItemGroup(itemIdentifier: id,
                                        images: [NSImage(systemSymbolName: "doc.text", accessibilityDescription: L("Page View"))!,
@@ -1858,17 +1887,6 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         setMode(mode == .highlight ? .page : .highlight)
     }
 
-    /// A click on the capsule: the first part toggles the tool, the second opens the styles.
-    @objc func highlightClicked(_ sender: NSSegmentedControl) {
-        if sender.isSelected(forSegment: 1) {          // the arrow: never stays pressed
-            sender.setSelected(false, forSegment: 1)
-            sender.setSelected(mode == .highlight, forSegment: 0)
-            showHighlightMenu(sender)
-        } else {
-            beginHighlight(sender)
-        }
-    }
-
     /// The colours, then underline and strikethrough. Choosing one turns the tool on (and marks a selection).
     @objc func showHighlightMenu(_ sender: NSView) {
         let m = NSMenu()
@@ -1882,9 +1900,10 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
             item.state = s == now ? .on : .off
             item.target = self
         }
-        // under the arrow part
-        let x = (sender as? NSSegmentedControl).map { $0.bounds.width - $0.width(forSegment: 1) - 8 } ?? 0
-        m.popUp(positioning: nil, at: NSPoint(x: max(x, 0), y: sender.bounds.height + 4), in: sender)
+        // under the arrow, which shows "on" while the menu is open
+        showOn(bHighlightStyle, true)
+        m.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 8), in: sender)
+        showOn(bHighlightStyle, false)
     }
 
     @objc func highlightStylePicked(_ sender: NSMenuItem) {
@@ -1896,7 +1915,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
 
     /// The tool button shows the chosen style: a highlighter, or the underline / strikethrough sign.
     private func showHighlightStyle() {
-        highlightControl.setImage(Self.symbol(HighlightStyle.saved.symbol, L("Highlight")), forSegment: 0)
+        bHighlight.image = Self.symbol(HighlightStyle.saved.symbol, L("Highlight"))
     }
 
     /// A text selection was finished (mouse released): with the tool on, mark it.
@@ -2101,6 +2120,10 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
             return mode == .marginsApply
         case #selector(beginText(_:)), #selector(toggleSignatures(_:)), #selector(beginHighlight(_:)), #selector(showHighlightMenu(_:)):
             return mode != .split && mode != .marginsApply && n > 0
+        case #selector(undoClicked(_:)):
+            return (window?.firstResponder?.undoManager ?? d.undoManager)?.canUndo ?? false
+        case #selector(redoClicked(_:)):
+            return (window?.firstResponder?.undoManager ?? d.undoManager)?.canRedo ?? false
         case #selector(previousPage(_:)):
             return !inGrid && currentPageIndex > 0
         case #selector(nextPage(_:)):
@@ -2139,4 +2162,60 @@ final class RadioGroup: NSObject {
     static let shared = RadioGroup()
     var buttons: [NSButton] = []
     @objc func pick(_ sender: NSButton) { for b in buttons { b.state = b === sender ? .on : .off } }
+}
+
+/// A part of a glass capsule ("Vurgula"): a button over a glass circle that fades in while the pointer is over the
+/// part, brightens while the button is pressed and stays while the part is "on".
+final class CapsulePart: NSView {
+    let button: CapsulePartButton
+    private let circle = NSGlassEffectView()
+    var changed: (() -> Void)?
+    var isOn = false { didSet { update() } }
+    private var hovered = false { didSet { if oldValue != hovered { update() } } }
+    var showsCircle: Bool { isOn || hovered }
+
+    init(button: CapsulePartButton, size: CGFloat) {
+        self.button = button
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        widthAnchor.constraint(equalToConstant: size).isActive = true
+        heightAnchor.constraint(equalToConstant: size).isActive = true
+        circle.cornerRadius = size / 2
+        circle.alphaValue = 0
+        for v in [circle, button] as [NSView] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(v)
+            NSLayoutConstraint.activate([v.leadingAnchor.constraint(equalTo: leadingAnchor), v.trailingAnchor.constraint(equalTo: trailingAnchor),
+                                         v.topAnchor.constraint(equalTo: topAnchor), v.bottomAnchor.constraint(equalTo: bottomAnchor)])
+        }
+        button.pressed = { [weak self] down in
+            self?.circle.tintColor = down ? NSColor.white.withAlphaComponent(0.18) : nil
+        }
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
+    }
+    override func mouseEntered(with event: NSEvent) { if button.isEnabled { hovered = true } }
+    override func mouseExited(with event: NSEvent) { hovered = false }
+
+    private func update() {
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.15
+            circle.animator().alphaValue = showsCircle ? 1 : 0
+        }
+        changed?()
+    }
+}
+
+/// The button of a capsule part: tells its part when it is pressed and let go.
+final class CapsulePartButton: NSButton {
+    var pressed: ((Bool) -> Void)?
+    override func highlight(_ flag: Bool) {
+        super.highlight(flag)
+        pressed?(flag)
+    }
 }
