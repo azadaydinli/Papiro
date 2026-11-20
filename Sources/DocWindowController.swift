@@ -476,57 +476,41 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         w.toolTip = L("Color")
         return w
     }()
-    /// "Vurgula" as in Preview: one liquid-glass capsule (interactive, as glass holding controls should be) with the
-    /// highlighter, a divider and the arrow for the styles. Turned on, the highlighter sits on a glass circle of its
-    /// own and the divider goes; with the styles open, the arrow does.
-    private lazy var bHighlight = capsulePart(HighlightStyle.saved.symbol, L("Highlight"), #selector(beginHighlight(_:)))
-    private lazy var bHighlightStyle = capsulePart("chevron.down", L("Highlight Style"), #selector(showHighlightMenu(_:)))
-    private let highlightDivider: NSBox = {
-        let line = NSBox()
-        line.boxType = .separator
-        line.translatesAutoresizingMaskIntoConstraints = false
-        line.heightAnchor.constraint(equalToConstant: 18).isActive = true
-        line.widthAnchor.constraint(equalToConstant: 1).isActive = true
-        return line
-    }()
-    private lazy var highlightCapsule: NSGlassEffectView = {
-        let row = NSStackView(views: [bHighlight.superview!, highlightDivider, bHighlightStyle.superview!])
-        // 3.25 + 29 + 4.25 + 1 + 4.25 + 29 + 3.25 = 74 pt: the glass shows 72.5 pt, as Preview's capsule; both circles the same size
-        row.spacing = 4.25
-        row.edgeInsets = NSEdgeInsets(top: 0, left: 3.25, bottom: 0, right: 3.25)
-        row.detachesHiddenViews = false
-        let g = NSGlassEffectView()
-        // not interactive glass: that squeezes the whole capsule on a click; each part answers on its own (as in Preview)
-        g.cornerRadius = Self.buttonSize / 2
-        g.contentView = row
-        g.translatesAutoresizingMaskIntoConstraints = false
-        g.heightAnchor.constraint(equalToConstant: Self.buttonSize).isActive = true
-        g.widthAnchor.constraint(equalToConstant: 74).isActive = true      // never changes (hover, press, on)
-        return g
-    }()
-
-    /// A button inside the glass capsule, on a part of its own that shows a glass circle while the pointer is over
-    /// it, brightens it while pressed and keeps it while "on" (as the parts of Preview's toolbar capsules).
-    private func capsulePart(_ symbol: String, _ name: String, _ action: Selector) -> NSButton {
-        let b = CapsulePartButton(image: Self.symbol(symbol, name), target: self, action: action)
-        b.isBordered = false
-        b.toolTip = name
-        let part = CapsulePart(button: b, size: 29)
-        part.changed = { [weak self] in self?.updateDivider() }
+    /// "Vurgula" as in Preview: the highlighter, a divider and the arrow for the styles in one capsule. It is one
+    /// glass button like the other tools (the same colour, hover and press); a click on its left part turns the
+    /// tool on or off, on its right part (the arrow) opens the styles.
+    private lazy var bHighlight: NSButton = {
+        let b = tool("", HighlightStyle.saved.symbol, #selector(highlightClicked(_:)), tip: L("Highlight"), toggle: true)
+        b.borderShape = .capsule
+        squares[ObjectIdentifier(b)]?.constant = Self.highlightWidth
         return b
+    }()
+    /// The capsule's width: the glass shows 72.5 pt, as Preview's.
+    private static let highlightWidth: CGFloat = 74
+
+    @objc func highlightClicked(_ sender: NSButton) {
+        let onArrow = (sender as? SplitButton)?.clickedRight == true
+        if onArrow { showHighlightMenu(sender) } else { beginHighlight(sender) }
+        updateStrip()        // the button's "on" follows the tool, not the click
     }
 
-    /// A part of the capsule shown "on" (its glass circle stays).
-    private func showOn(_ b: NSButton, _ on: Bool) {
-        (b.superview as? CapsulePart)?.isOn = on
-        updateDivider()
-    }
-
-    /// The divider goes while either part shows its circle (hovered or on), as in Preview.
-    private func updateDivider() {
-        let parts = [bHighlight, bHighlightStyle].compactMap { $0.superview as? CapsulePart }
-        // faded rather than hidden, so nothing in the capsule moves
-        highlightDivider.alphaValue = parts.contains { $0.showsCircle } ? 0 : 1
+    /// The capsule's picture: the style's symbol, a divider and the arrow, placed as in Preview's capsule
+    /// (each symbol in the middle of its half). A template, so it takes the same colour as the other tools.
+    private static func highlightImage(_ style: HighlightStyle) -> NSImage {
+        let pen = symbol(style.symbol, L("Highlight")), arrow = symbol("chevron.down", L("Highlight Style"))
+        let inset: CGFloat = 8, w = highlightWidth - 2 * inset, h: CGFloat = 20
+        let img = NSImage(size: NSSize(width: w, height: h), flipped: false) { _ in
+            for (sym, centre) in [(pen, highlightWidth / 4), (arrow, highlightWidth * 3 / 4)] {
+                let sz = sym.size
+                sym.draw(in: NSRect(x: centre - inset - sz.width / 2, y: (h - sz.height) / 2, width: sz.width, height: sz.height))
+            }
+            NSColor.black.withAlphaComponent(0.3).setFill()
+            NSRect(x: w / 2 - 0.5, y: 1, width: 1, height: h - 2).fill()
+            return true
+        }
+        img.isTemplate = true
+        img.accessibilityDescription = L("Highlight")
+        return img
     }
 
     /// A tool symbol, the size of the other tool buttons' symbols.
@@ -580,7 +564,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     private func tool(_ title: String, _ symbol: String, _ action: Selector, tip: String,
                       prominent: Bool = false, toggle: Bool = false) -> NSButton {
         let img = NSImage(systemSymbolName: symbol, accessibilityDescription: title.isEmpty ? tip : title)!
-        let b = NSButton(title: title, image: img, target: self, action: action)
+        let b = SplitButton(title: title, image: img, target: self, action: action)
         b.bezelStyle = .glass
         b.controlSize = .extraLarge
         b.font = .systemFont(ofSize: 13, weight: .medium)
@@ -610,7 +594,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
     }
 
     private var squares: [ObjectIdentifier: NSLayoutConstraint] = [:]
-    private var pageTools: [NSView] { [bAdd, bExtract, bDelete, bWhite, bText, bSign, highlightCapsule] }
+    private var pageTools: [NSView] { [bAdd, bExtract, bDelete, bWhite, bText, bSign, bHighlight] }
 
     /// "Clean Margins" and "Split into Documents" show their names; only a window too narrow for them makes
     /// them icons as well.
@@ -759,9 +743,8 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         }
         bMargins.state = mode == .margins ? .on : .off
         bWhite.state = mode == .whiteout ? .on : .off
-        showOn(bHighlight, mode == .highlight)
+        bHighlight.state = mode == .highlight ? .on : .off
         bHighlight.isEnabled = can(#selector(beginHighlight(_:)))
-        bHighlightStyle.isEnabled = bHighlight.isEnabled
         showHighlightStyle()
         bText.state = mode == .text ? .on : .off
         bSign.state = inspectorItem.isCollapsed ? .off : .on
@@ -1900,10 +1883,8 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
             item.state = s == now ? .on : .off
             item.target = self
         }
-        // under the arrow, which shows "on" while the menu is open
-        showOn(bHighlightStyle, true)
-        m.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 8), in: sender)
-        showOn(bHighlightStyle, false)
+        // under the capsule's arrow
+        m.popUp(positioning: nil, at: NSPoint(x: sender.bounds.midX, y: sender.bounds.height + 8), in: sender)
     }
 
     @objc func highlightStylePicked(_ sender: NSMenuItem) {
@@ -1915,7 +1896,7 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
 
     /// The tool button shows the chosen style: a highlighter, or the underline / strikethrough sign.
     private func showHighlightStyle() {
-        bHighlight.image = Self.symbol(HighlightStyle.saved.symbol, L("Highlight"))
+        bHighlight.image = Self.highlightImage(HighlightStyle.saved)
     }
 
     /// A text selection was finished (mouse released): with the tool on, mark it.
@@ -2118,7 +2099,8 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
             return mode == .margins || (mode == .marginsApply && !grid.chosen.isEmpty)
         case #selector(marginsBack(_:)):
             return mode == .marginsApply
-        case #selector(beginText(_:)), #selector(toggleSignatures(_:)), #selector(beginHighlight(_:)), #selector(showHighlightMenu(_:)):
+        case #selector(beginText(_:)), #selector(toggleSignatures(_:)), #selector(beginHighlight(_:)), #selector(showHighlightMenu(_:)),
+             #selector(highlightClicked(_:)):
             return mode != .split && mode != .marginsApply && n > 0
         case #selector(undoClicked(_:)):
             return (window?.firstResponder?.undoManager ?? d.undoManager)?.canUndo ?? false
@@ -2164,58 +2146,12 @@ final class RadioGroup: NSObject {
     @objc func pick(_ sender: NSButton) { for b in buttons { b.state = b === sender ? .on : .off } }
 }
 
-/// A part of a glass capsule ("Vurgula"): a button over a glass circle that fades in while the pointer is over the
-/// part, brightens while the button is pressed and stays while the part is "on".
-final class CapsulePart: NSView {
-    let button: CapsulePartButton
-    private let circle = NSGlassEffectView()
-    var changed: (() -> Void)?
-    var isOn = false { didSet { update() } }
-    private var hovered = false { didSet { if oldValue != hovered { update() } } }
-    var showsCircle: Bool { isOn || hovered }
-
-    init(button: CapsulePartButton, size: CGFloat) {
-        self.button = button
-        super.init(frame: .zero)
-        translatesAutoresizingMaskIntoConstraints = false
-        widthAnchor.constraint(equalToConstant: size).isActive = true
-        heightAnchor.constraint(equalToConstant: size).isActive = true
-        circle.cornerRadius = size / 2
-        circle.alphaValue = 0
-        for v in [circle, button] as [NSView] {
-            v.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(v)
-            NSLayoutConstraint.activate([v.leadingAnchor.constraint(equalTo: leadingAnchor), v.trailingAnchor.constraint(equalTo: trailingAnchor),
-                                         v.topAnchor.constraint(equalTo: topAnchor), v.bottomAnchor.constraint(equalTo: bottomAnchor)])
-        }
-        button.pressed = { [weak self] down in
-            self?.circle.tintColor = down ? NSColor.white.withAlphaComponent(0.18) : nil
-        }
-    }
-    required init?(coder: NSCoder) { fatalError() }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
-    }
-    override func mouseEntered(with event: NSEvent) { if button.isEnabled { hovered = true } }
-    override func mouseExited(with event: NSEvent) { hovered = false }
-
-    private func update() {
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.15
-            circle.animator().alphaValue = showsCircle ? 1 : 0
-        }
-        changed?()
-    }
-}
-
-/// The button of a capsule part: tells its part when it is pressed and let go.
-final class CapsulePartButton: NSButton {
-    var pressed: ((Bool) -> Void)?
-    override func highlight(_ flag: Bool) {
-        super.highlight(flag)
-        pressed?(flag)
+/// A glass tool button that remembers whether its last click was on its right half ("Vurgula": the arrow).
+final class SplitButton: NSButton {
+    private(set) var clickedRight = false
+    override func mouseDown(with event: NSEvent) {
+        clickedRight = convert(event.locationInWindow, from: nil).x > bounds.midX
+        super.mouseDown(with: event)        // tracks the click and sends the action
+        clickedRight = false                // a click from the keyboard or VoiceOver is on the tool itself
     }
 }
