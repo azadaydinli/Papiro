@@ -12,8 +12,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ n: Notification) {
-        // opened without a file: the start window ("Open" and the files opened last)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { WelcomeController.showIfIdle() }
+        // opened without a file: the start window ("Open" and the files opened last). Opened to show a file
+        // (double-click in Finder, Papiro the default PDF app) it does not come: a large file takes a moment to
+        // open, and the start window would flash before it.
+        if !openingFiles {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { WelcomeController.showIfIdle() }
+        }
         // a newer version on GitHub? (at most once a day, a few seconds after opening)
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { Updater.shared.checkAutomatically() }
     }
@@ -22,6 +26,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func checkForUpdates(_ sender: Any?) { Updater.shared.checkNow(sender) }
 
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { false }
+
+    /// Files given by Finder (double-click, "Open With", dropped on the Dock icon): opened as macOS would, and
+    /// noted, so the start window stays away. If none opens, the start window comes after all.
+    private var openingFiles = false
+    func application(_ application: NSApplication, open urls: [URL]) {
+        openingFiles = true
+        for url in urls {
+            NSDocumentController.shared.openDocument(withContentsOf: url, display: true) { _, _, error in
+                guard let error else { return }
+                NSApp.presentError(error)
+                WelcomeController.showIfIdle()
+            }
+        }
+    }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag { WelcomeController.showIfIdle() }

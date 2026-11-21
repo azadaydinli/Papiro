@@ -61,7 +61,7 @@ yeni bir "Papiro" qoyur və Masaüstündəki nüsxə də quraşdırılmışın y
 | `Localize.swift` | `L("…")`: ingiliscə mətn açardır, türkcəsi `Resources/tr.lproj/Localizable.strings`-dən gəlir |
 | `main.swift` | Proqramın başlanğıcı, menyular, "Faylları birləşdir" |
 | `Updater.swift` | GitHub Releases-dən yeniləmə: gündə bir dəfə yoxlama, bildiriş, Papiro.zip + SHA-256 yoxlaması, əvəzetmə və yenidən açılış |
-| `Welcome.swift` | Başlanğıc pəncərəsi (Papiro faylsız açılanda və ya Dock-dan çağırılanda): "Aç" və "Son baxılanlar". Son sənəd bağlananda Papiro bağlanır, bu pəncərəyə qayıtmır |
+| `Welcome.swift` | Başlanğıc pəncərəsi (Papiro faylsız açılanda və ya Dock-dan çağırılanda): "Aç" və "Son baxılanlar". Papiro fayl ilə açılanda (Finder-də iki klik, PDF-lərin default proqramı) görünmür: Finder-in verdiyi faylları `AppDelegate.application(_:open:)` açır və qeyd edir. Pəncərəni bağlamaq (x, ⌘W) yalnız sənədi bağlayır, Papiro açıq qalır (Mac proqramları kimi); son sənəd bağlananda pəncərə qalmır, Dock ikonuna klik bu pəncərəni açır |
 | `PDFDoc.swift` | `NSDocument`: PDF, səhifə əməliyyatları (`perform` → geri alınır), Böl işarələri (`groups`), diskdəki sıra (`diskIndex`) |
 | `Marks.swift` | `MarkStore`: yarımçıq işarələmənin bərpası üçün işarələrin yerli müvəqqəti saxlanması |
 | `DocWindowController.swift` | Pəncərə: üst bar, alətlər barı, sol panel, sağda imza paneli (inspector), rejimlər (`page`, `grid`, `split`, `margins`, `marginsApply`, `whiteout`, `text`, `highlight`), bütün əmrlər |

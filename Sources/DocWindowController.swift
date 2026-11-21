@@ -2130,12 +2130,10 @@ final class DocWindowController: NSWindowController, NSWindowDelegate, NSToolbar
         return can(item.action)
     }
 
+    /// Closing the window closes only its document; Papiro keeps running, as Mac apps do (the Dock icon
+    /// brings back the start window, ⌘O opens another file).
     func windowWillClose(_ notification: Notification) {
         NotificationCenter.default.removeObserver(self)
-        // the last document closed: Papiro quits (it does not go back to the start window)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            if NSDocumentController.shared.documents.isEmpty { NSApp.terminate(nil) }
-        }
     }
 }
 
