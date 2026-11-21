@@ -16,7 +16,7 @@ Papiro Türkçe ve İngilizce kullanılabilir; dili macOS’un diline göre seç
 
 **[Papiro.dmg — son sürüm](https://github.com/azadaydinli/Papiro/releases/latest/download/Papiro.dmg)**
 
-Gereksinim: macOS 26 veya daha yenisi.
+Gereksinim: macOS 26 veya daha yenisi; Apple Silicon ve Intel Mac’lerde çalışır.
 
 ## Kurulum
 
@@ -53,7 +53,7 @@ Papiro is available in Turkish and English; it follows the language of macOS.
 
 **[Papiro.dmg — latest version](https://github.com/azadaydinli/Papiro/releases/latest/download/Papiro.dmg)**
 
-Requires macOS 26 or later.
+Requires macOS 26 or later; runs on Apple Silicon and Intel Macs.
 
 ### Installing
 

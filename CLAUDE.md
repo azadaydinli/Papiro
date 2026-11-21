@@ -42,6 +42,7 @@ bölməkdir (Böl): `Document_0001.pdf`, `Document_0002.pdf` … Bu fayllar sonr
 osascript -e 'tell application id "az.local.papiro" to quit'
 ditto build.noindex/Papiro.app /Applications/Papiro.app
 ```
+`build.sh` universal yığır: proqram `arm64` və `x86_64` üçün ayrıca yığılıb `lipo` ilə bir fayla birləşdirilir, ona görə Apple Silicon və Intel Mac-də (macOS 26+) işləyir; hansı Mac-də yığılmasından asılı deyil.
 `build.sh` paketi müvəqqəti qovluqda yığır: iCloud Masaüstündəki paketə FinderInfo əlavə edir və `codesign` onu qəbul etmir.
 Hər iki qovluğun adı `.noindex` ilə bitir: Spotlight onları indeksləmir, yoxsa hər yığma Proqramlar siyahısında
 yeni bir "Papiro" qoyur və Masaüstündəki nüsxə də quraşdırılmışın yanında görünür.

@@ -10,8 +10,12 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 APP="$TMP/build.noindex/Papiro.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-swiftc -swift-version 5 -O -target "$(uname -m)-apple-macos26.0" -module-name Papiro \
-  Sources/*.swift -o "$APP/Contents/MacOS/Papiro" -framework AppKit -framework PDFKit
+# universal: one binary for Apple Silicon and Intel Macs (whichever Mac builds it)
+for ARCH in arm64 x86_64; do
+  swiftc -swift-version 5 -O -target "$ARCH-apple-macos26.0" -module-name Papiro \
+    Sources/*.swift -o "$TMP/Papiro-$ARCH" -framework AppKit -framework PDFKit
+done
+lipo -create "$TMP/Papiro-arm64" "$TMP/Papiro-x86_64" -output "$APP/Contents/MacOS/Papiro"
 cp Info.plist "$APP/Contents/Info.plist"
 [ -f AppIcon.icns ] && cp AppIcon.icns "$APP/Contents/Resources/"
 cp -R Resources/*.lproj "$APP/Contents/Resources/"      # English and Turkish texts
